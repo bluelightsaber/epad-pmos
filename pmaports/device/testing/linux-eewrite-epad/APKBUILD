@@ -1,0 +1,104 @@
+# Maintainer: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+# Kernel for the Eewrite E-PAD (MediaTek MT6797): Linux 7.2 + the E-PAD series
+pkgname=linux-eewrite-epad
+pkgver=7.2.11
+pkgrel=1
+pkgdesc="Eewrite E-PAD (MT6797) mainline kernel"
+arch="aarch64"
+_carch="arm64"
+_flavor="eewrite-epad"
+url="https://kernel.org"
+license="GPL-2.0-only"
+options="!strip !check !tracedeps pmb:cross-native"
+makedepends="
+	bash
+	bison
+	findutils
+	flex
+	gmp-dev
+	linux-headers
+	mpc1-dev
+	mpfr-dev
+	openssl-dev
+	pahole
+	zstd
+	perl
+	postmarketos-installkernel
+	python3
+	xz
+"
+_config="config-$_flavor.$arch"
+source="
+	https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-$pkgver.tar.xz
+	$_config
+	0001-watchdog-mtk_wdt-raise-restart-handler-priority.patch
+	0002-pinctrl-mediatek-mt6797-add-IES-SMT-pull-EINT-data-a.patch
+	0003-pmdomain-mediatek-scpsys-handle-MT6797-register-hole.patch
+	0004-regulator-add-minimal-MT6351-regulator-driver-over-t.patch
+	0005-i2c-mt65xx-MT6797-write-then-read-support.patch
+	0006-Input-cyttsp5-support-the-E-PAD-TT21000-sysinfo-axis.patch
+	0007-phy-mediatek-tphy-MT6797-USB2-PHY.patch
+	0008-mmc-mtk-sd-add-MT6797-HS200-HS400.patch
+	0009-pwm-mediatek-add-MT6797.patch
+	0010-arm64-MT6797-bring-up-all-10-CPUs-cluster-coherency-.patch
+	0011-power-supply-bq24190-work-without-IRQ-line-add-MT635.patch
+	0012-cpufreq-add-MT6797-driver-3-clusters-CCI-DA9214-EEM.patch
+	0013-thermal-mediatek-auxadc-add-MT6797.patch
+	0014-rtc-add-MT6351-RTC-driver.patch
+	0015-misc-add-E-Ink-T1000-controller-driver.patch
+	0016-soc-mediatek-MT6797-SPM-MT6351-PMIC-interrupts-and-C.patch
+	0017-Bluetooth-add-MT6797-CONNSYS-STP-driver.patch
+	0018-wifi-mediatek-add-MT6797-CONNSYS-WLAN-driver.patch
+	0019-Input-add-MediaTek-MT6351-PMIC-power-key-driver.patch
+	0020-arm64-dts-mediatek-add-Eewrite-E-PAD-Epad_PRO.patch
+"
+builddir="$srcdir/linux-$pkgver"
+
+prepare() {
+	default_prepare
+	cp "$srcdir/$_config" .config
+	make ARCH="$_carch" olddefconfig
+}
+
+build() {
+	unset LDFLAGS
+	make ARCH="$_carch" CC="${CC:-gcc}" \
+		KBUILD_BUILD_VERSION="$((pkgrel + 1 ))-postmarketOS"
+}
+
+package() {
+	mkdir -p "$pkgdir"/boot
+	make zinstall modules_install dtbs_install \
+		ARCH="$_carch" \
+		INSTALL_PATH="$pkgdir"/boot \
+		INSTALL_MOD_PATH="$pkgdir"/usr \
+		INSTALL_MOD_STRIP=1 \
+		INSTALL_DTBS_PATH="$pkgdir/boot/dtbs"
+	rm -f "$pkgdir"/usr/lib/modules/*/build "$pkgdir"/usr/lib/modules/*/source
+	install -D "$builddir"/include/config/kernel.release \
+		"$pkgdir"/usr/share/kernel/$_flavor/kernel.release
+}
+sha512sums="
+6d11c92c490c0e7bc3485c86b59fc1c6bb79eed2604726c7b398797b8c48a8cbe49273c23857ab12929365868442c1ed6ba1b1c64c7d0404befd3b5f902eb69c  linux-7.2.11.tar.xz
+4c41d5180750c730433f505f78877efe0d238c0bc5c1eade4ae4e4c04485e76e97ec5beab16569ddc28f6e56638ae1bf599f79ec7ec3cc5de4ca123ff203a268  config-eewrite-epad.aarch64
+2c613433aa4ef84069b88eda880e5893a9a3e9e670f0d8331b76693a86b46273e423b141b45cc6235d698170defcfdaab735eec010ffcfba2098b9eb2079b7ed  0001-watchdog-mtk_wdt-raise-restart-handler-priority.patch
+266abe37825107bcde5b119fce217599f67177c2972c4ffa2e2f6df98920edec79ce6cc910e98f35e431d33b633ab211861a8e119ade7c7e64ee6ff29a26bf95  0002-pinctrl-mediatek-mt6797-add-IES-SMT-pull-EINT-data-a.patch
+37ad90f2020c9004b9dec8f4b4c3963e2813aec1c528d3e189465c7b65804e90c9cee9eb133b816d06a4d6154354c79777c5d1998c8d170b885f0521b30164e4  0003-pmdomain-mediatek-scpsys-handle-MT6797-register-hole.patch
+6cf56aa100d098c7d4866e3b839191595721adfe8e7dba79e1ef388ab855179efdda6aa5baada73caaf2d904defc842f39094d4408a56607743464b5f06ef0c5  0004-regulator-add-minimal-MT6351-regulator-driver-over-t.patch
+76963f027430d009162aebfc27ee8c29ab2a1f52976e05ad682f588d64d0586856c015800d704aefe0e8d4541491e6efe7ec2e3ea5a91a60bbed53333cbff5a2  0005-i2c-mt65xx-MT6797-write-then-read-support.patch
+4f7542a014f76788cda54e5963289a40207bda80d1cbb2569de9c97f0d0b050731ba86b3af790500f1dbb7b916d4b4952af4d64da921303ed0f5f25d0216c76e  0006-Input-cyttsp5-support-the-E-PAD-TT21000-sysinfo-axis.patch
+5d4af8f4697b295c805d1220777388272276f0cc8597a5d4bca19245a9bdccae6bad16b95fa565d502f8673569d345110755a5a1b9e817d40cff4ebbf3dce74b  0007-phy-mediatek-tphy-MT6797-USB2-PHY.patch
+db25d486fa6064cdeb6939b498feb36460bd2793b77c62068f972325edcd3203b028e61095c7ec7eb10d583fbeaf7a16943e04aa832063443d684350d8a8e19f  0008-mmc-mtk-sd-add-MT6797-HS200-HS400.patch
+25b4ef1c3e23579bd5aca94b256b5545305f2adfdf094391dd75b9e52bfd19251f718cc3040b126e9cbf9deb41193e168c577da0fd619239d514bcc23213d02f  0009-pwm-mediatek-add-MT6797.patch
+dea7ee5aba2875b65eea667b368c24b2094dc3ffeef84f3df2908b33e17dd0465c21af9f2182467f556329e7367c4cfccfdcaf07b77e648f1752991b318e0b62  0010-arm64-MT6797-bring-up-all-10-CPUs-cluster-coherency-.patch
+777f8f9f6729d69cea93091453c6708c23a2a2827e047a1bc769fbd90a33ff7ace37da967b1555953d825d868ebd600164f2d6fd2735108004a6528ef59ef21b  0011-power-supply-bq24190-work-without-IRQ-line-add-MT635.patch
+36354c315b55704a80629b39247ddc571c1f42f289a8b91ee25d0e1509099c3161baeeddd01fe942efbb3889d08521b07d58178ee4989fdac43b6669765b5141  0012-cpufreq-add-MT6797-driver-3-clusters-CCI-DA9214-EEM.patch
+6100c9a6e9a830cbc68324ffee71dd25c5e78337797b5c84e0bba998baba6294186f9a08599e9bc1204a5294ff2f0c7f71e0d10d4f02454b0ec5b4bb95342309  0013-thermal-mediatek-auxadc-add-MT6797.patch
+5e0b6a19fd224f7149535bbd21249caa63cd28267adb60537d2d5db5dad645c7e4df8d2c3b430322700565d75d75a8c4b8f017d1a517a6776797514502e0e602  0014-rtc-add-MT6351-RTC-driver.patch
+99650244dd2a1560c0466b718d95eee19a7e65cec486cabf2021f2be0abfedf0d912075aa6053a5e0103542cd97cf8310dc8e3fb096a0cba8ecbe1cbe955e316  0015-misc-add-E-Ink-T1000-controller-driver.patch
+7e27bbccab207de16e4357a46a48d8241be5ac43e0f37707879cc9ba10e337a74ddff8aea0f6b2a5e3b0bbe28d87082523622bc3afeed40ddb71179a4e52581d  0016-soc-mediatek-MT6797-SPM-MT6351-PMIC-interrupts-and-C.patch
+6814b82bf67517efed5318c0afef9f8631c3e2c88f166bd733af2a87d81a7cf701e4df80f862bd39c20f7c9d2f2965c2d9a1e2dfd6ee149cf5389cf8542a0b36  0017-Bluetooth-add-MT6797-CONNSYS-STP-driver.patch
+0288f20089b8c79a193b562b0631b4e19424130606b0e41d5af68d3c3004db42e0c552791be6776cb34ec771bee5b52cdd738c2c9afbf1ac27930dffc536efce  0018-wifi-mediatek-add-MT6797-CONNSYS-WLAN-driver.patch
+671b9addc2c3ed20195c3479e222b4aaeac8c5e75b86bbfd1ebfa0f227dfbb0b61985d835b7b77442b1621a2a5fe2f1ed2b90cf57c6739a4dd031b5c956e893d  0019-Input-add-MediaTek-MT6351-PMIC-power-key-driver.patch
+cf2265d4aedce9ce58cad062c93625303c49d13ea4a2349aa25869a55ff65d3ea769944f40361fd6a5f00e2c34fad372b2000f3cb034b66b3abf59baaca4d272  0020-arm64-dts-mediatek-add-Eewrite-E-PAD-Epad_PRO.patch
+"

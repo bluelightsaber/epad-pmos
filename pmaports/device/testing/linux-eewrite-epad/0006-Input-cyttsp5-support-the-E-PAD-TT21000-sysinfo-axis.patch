@@ -1,0 +1,57 @@
+From 75f73d8b1f3acced24b5ab8ba17e7aae2054e7b5 Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 00:20:01 +0200
+Subject: [PATCH 06/20] Input: cyttsp5: support the E-PAD TT21000 (sysinfo,
+ axis properties order)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/input/touchscreen/cyttsp5.c | 21 +++++++++++++++++++--
+ 1 file changed, 19 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/input/touchscreen/cyttsp5.c b/drivers/input/touchscreen/cyttsp5.c
+index e878a02dc..41be75739 100644
+--- a/drivers/input/touchscreen/cyttsp5.c
++++ b/drivers/input/touchscreen/cyttsp5.c
+@@ -392,6 +392,9 @@ static int cyttsp5_setup_input_device(struct device *dev)
+ 	input_set_abs_params(ts->input, ABS_MT_TOUCH_MAJOR, 0, MAX_AREA, 0, 0);
+ 	input_set_abs_params(ts->input, ABS_MT_TOUCH_MINOR, 0, MAX_AREA, 0, 0);
+ 
++	/* E-PAD: después de crear los ejes; si no, touchscreen-inverted-* usa un máximo de 0. */
++	touchscreen_parse_properties(ts->input, true, &ts->prop);
++
+ 	error = input_mt_init_slots(ts->input, si->tch_abs[CY_TCH_T].max,
+ 				    INPUT_MT_DROP_UNUSED | INPUT_MT_DIRECT);
+ 	if (error)
+@@ -534,6 +537,22 @@ static int cyttsp5_get_sysinfo_regs(struct cyttsp5 *ts)
+ 	scd->len_x = get_unaligned_le16(&scd_dev->len_x);
+ 	scd->len_y = get_unaligned_le16(&scd_dev->len_y);
+ 
++	/*
++	 * E-PAD: el firmware de esta tablet devuelve una información de sistema que no encaja (max_tch = 0 y
++	 * los toques se descartan). Valores de reserva: 10 toques (tpd-max-touch-num del DT de fábrica); el
++	 * tamaño lo fija el DT con touchscreen-size-x/y.
++	 */
++	dev_info(ts->dev, "sysinfo: max_tch=%u res=%ux%u max_z=%u len=%ux%u\n", scd->max_tch, scd->res_x,
++		 scd->res_y, scd->max_z, scd->len_x, scd->len_y);
++	if (scd->max_tch == 0 || scd->max_tch > 10)
++		scd->max_tch = 10;
++	if (scd->res_x == 0 || scd->res_y == 0) {
++		scd->res_x = 1872;
++		scd->res_y = 1404;
++	}
++	if (scd->max_z == 0)
++		scd->max_z = 255;
++
+ 	return 0;
+ }
+ 
+@@ -904,8 +923,6 @@ static int cyttsp5_probe(struct device *dev, struct regmap *regmap, int irq,
+ 		return error;
+ 	}
+ 
+-	touchscreen_parse_properties(ts->input, true, &ts->prop);
+-
+ 	__set_bit(EV_KEY, ts->input->evbit);
+ 	for (i = 0; i < si->num_btns; i++)
+ 		__set_bit(si->key_code[i], ts->input->keybit);

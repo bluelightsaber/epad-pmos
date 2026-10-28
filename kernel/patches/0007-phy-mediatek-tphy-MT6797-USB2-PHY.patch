@@ -1,0 +1,67 @@
+From 997c02516dd29d181596a71a4753f2e12ad18792 Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 00:20:01 +0200
+Subject: [PATCH 07/20] phy: mediatek: tphy: MT6797 USB2 PHY
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/phy/mediatek/phy-mtk-tphy.c | 25 +++++++++++++++++++++++++
+ 1 file changed, 25 insertions(+)
+
+diff --git a/drivers/phy/mediatek/phy-mtk-tphy.c b/drivers/phy/mediatek/phy-mtk-tphy.c
+index acf506529..8ddddb871 100644
+--- a/drivers/phy/mediatek/phy-mtk-tphy.c
++++ b/drivers/phy/mediatek/phy-mtk-tphy.c
+@@ -294,6 +294,8 @@ struct mtk_phy_pdata {
+ 	u8 slew_ref_clock_mhz;
+ 	u8 slew_rate_coefficient;
+ 	enum mtk_phy_version version;
++	/* E-PAD/MT6797: quitar el aislamiento de la PHY U2 y encender VUSB10 (como mtk-phy-asic.c del 3.18) */
++	bool mt6797_power;
+ };
+ 
+ struct u2phy_banks {
+@@ -871,6 +873,20 @@ static void u2_phy_instance_power_on(struct mtk_tphy *tphy,
+ 	void __iomem *com = u2_banks->com;
+ 	u32 index = instance->index;
+ 
++	if (tphy->pdata->mt6797_power) {
++		/* VUSB10_ON: U3 PHYA REG1 (PHY + 0xb04, bit 29); en el DT u2port0 mapea 0x800..0xbff */
++		mtk_phy_set_bits(com + 0x304, BIT(29));
++		udelay(50);
++		/* RG_USB20_ISO_EN = 0 (USBPHYACR6 bit 31) */
++		mtk_phy_clear_bits(com + U3P_USBPHYACR6, BIT(31));
++		/*
++		 * El VBUS no llega a la PHY (lo detecta el PMIC): forzar VBUSVALID, AVALID, BVALID y fin de sesión = 0
++		 * en U2PHYDTM1 (bits FORCE 13/12/11/10, valores 5/4/3/2), como mu3d del kernel 3.18.
++		 */
++		mtk_phy_update_bits(com + U3P_U2PHYDTM1, GENMASK(13, 10) | GENMASK(5, 2),
++				    GENMASK(13, 10) | BIT(5) | BIT(3) | BIT(2));
++	}
++
+ 	/* OTG Enable */
+ 	mtk_phy_set_bits(com + U3P_USBPHYACR6, PA6_RG_U2_OTG_VBUSCMP_EN);
+ 
+@@ -1525,6 +1541,14 @@ static const struct mtk_phy_pdata tphy_v1_pdata = {
+ 	.version = MTK_PHY_V1,
+ };
+ 
++static const struct mtk_phy_pdata mt6797_pdata = {
++	.avoid_rx_sen_degradation = false,
++	.slew_ref_clock_mhz = 26,
++	.slew_rate_coefficient = 28,
++	.version = MTK_PHY_V1,
++	.mt6797_power = true,
++};
++
+ static const struct mtk_phy_pdata tphy_v2_pdata = {
+ 	.avoid_rx_sen_degradation = false,
+ 	.sw_efuse_supported = true,
+@@ -1554,6 +1578,7 @@ static const struct mtk_phy_pdata mt8195_pdata = {
+ static const struct of_device_id mtk_tphy_id_table[] = {
+ 	{ .compatible = "mediatek,mt2701-u3phy", .data = &tphy_v1_pdata },
+ 	{ .compatible = "mediatek,mt2712-u3phy", .data = &tphy_v2_pdata },
++	{ .compatible = "mediatek,mt6797-u3phy", .data = &mt6797_pdata },
+ 	{ .compatible = "mediatek,mt8173-u3phy", .data = &mt8173_pdata },
+ 	{ .compatible = "mediatek,mt8195-tphy", .data = &mt8195_pdata },
+ 	{ .compatible = "mediatek,generic-tphy-v1", .data = &tphy_v1_pdata },

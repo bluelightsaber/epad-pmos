@@ -1,0 +1,82 @@
+From 886657adba5e648f27b94d82f9d4b60cbc1f809f Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 00:20:00 +0200
+Subject: [PATCH 03/20] pmdomain: mediatek: scpsys: handle MT6797 register
+ holes
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/pmdomain/mediatek/mtk-scpsys.c | 18 ++++++++++++++++--
+ 1 file changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/pmdomain/mediatek/mtk-scpsys.c b/drivers/pmdomain/mediatek/mtk-scpsys.c
+index efc8f276f..cf0c2773f 100644
+--- a/drivers/pmdomain/mediatek/mtk-scpsys.c
++++ b/drivers/pmdomain/mediatek/mtk-scpsys.c
+@@ -89,6 +89,7 @@ enum clk_id {
+ 	CLK_HIFSEL,
+ 	CLK_JPGDEC,
+ 	CLK_AUDIO,
++	CLK_MJC,
+ 	CLK_MAX,
+ };
+ 
+@@ -103,6 +104,7 @@ static const char * const clk_names[] = {
+ 	"hif_sel",
+ 	"jpgdec",
+ 	"audio",
++	"mjc",
+ 	NULL,
+ };
+ 
+@@ -468,6 +470,10 @@ static struct scp *init_scp(struct platform_device *pdev,
+ 		struct scp_domain *scpd = &scp->domains[i];
+ 		const struct scp_domain_data *data = &scp_domain_data[i];
+ 
++		/* E-PAD: el MT6797 deja huecos sin datos en su tabla (MFG y MFG_CORE0-3): saltarlos. */
++		if (!data->name)
++			continue;
++
+ 		scpd->supply = devm_regulator_get_optional(&pdev->dev, data->name);
+ 		if (IS_ERR(scpd->supply)) {
+ 			if (PTR_ERR(scpd->supply) == -ENODEV)
+@@ -486,6 +492,9 @@ static struct scp *init_scp(struct platform_device *pdev,
+ 		struct generic_pm_domain *genpd = &scpd->genpd;
+ 		const struct scp_domain_data *data = &scp_domain_data[i];
+ 
++		if (!data->name)
++			continue;
++
+ 		pd_data->domains[i] = genpd;
+ 		scpd->scp = scp;
+ 
+@@ -524,6 +533,9 @@ static void mtk_register_power_domains(struct platform_device *pdev,
+ 		struct generic_pm_domain *genpd = &scpd->genpd;
+ 		bool on;
+ 
++		if (!scpd->data)
++			continue;
++
+ 		/*
+ 		 * Initially turn on all domains to make the domains usable
+ 		 * with !CONFIG_PM and to get the hardware in sync with the
+@@ -792,7 +804,8 @@ static const struct scp_domain_data scp_domain_data_mt6797[] = {
+ 		.ctl_offs = 0x314,
+ 		.sram_pdn_bits = GENMASK(11, 8),
+ 		.sram_pdn_ack_bits = GENMASK(15, 12),
+-		.clk_id = {CLK_NONE},
++		/* E-PAD: sin el reloj de audio (infra_audio_26m, pre_clk del BSP) la SRAM no confirma el apagado */
++		.clk_id = {CLK_AUDIO},
+ 	},
+ 	[MT6797_POWER_DOMAIN_MFG_ASYNC] = {
+ 		.name = "mfg_async",
+@@ -808,7 +821,8 @@ static const struct scp_domain_data scp_domain_data_mt6797[] = {
+ 		.ctl_offs = 0x310,
+ 		.sram_pdn_bits = GENMASK(8, 8),
+ 		.sram_pdn_ack_bits = GENMASK(12, 12),
+-		.clk_id = {CLK_NONE},
++		/* E-PAD: ídem con mjc_sel */
++		.clk_id = {CLK_MJC},
+ 	},
+ };
+ 

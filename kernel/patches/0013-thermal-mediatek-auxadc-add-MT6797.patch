@@ -1,0 +1,69 @@
+From 6d63b83c610f47e88dc28d87590bd12f55956bb5 Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 00:20:03 +0200
+Subject: [PATCH 13/20] thermal: mediatek: auxadc: add MT6797
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/thermal/mediatek/auxadc_thermal.c | 41 +++++++++++++++++++++++
+ 1 file changed, 41 insertions(+)
+
+diff --git a/drivers/thermal/mediatek/auxadc_thermal.c b/drivers/thermal/mediatek/auxadc_thermal.c
+index 9ee2e7283..b59cb189c 100644
+--- a/drivers/thermal/mediatek/auxadc_thermal.c
++++ b/drivers/thermal/mediatek/auxadc_thermal.c
+@@ -511,6 +511,43 @@ static const struct mtk_thermal_data mt8173_thermal_data = {
+ 	.version = MTK_THERMAL_V1,
+ };
+ 
++/*
++ * E-PAD: el MT6797 tiene los mismos sensores (TS_MCU1..4 + ABB, canal 11 del AUXADC) y la misma calibración v1
++ * (efuse 0x10206180..0x1020618b) que el MT8173, con 6 bancos (mtk_tc.c del kernel 3.18): big, GPU, SoC, L, LL y
++ * MCUCCI. Pendiente de la fórmula de fábrica: 1663 + 10 * o_slope en décimas -> cali_val 166.
++ */
++static const int mt6797_bank_data[6][3] = {
++	{ MT8173_TS1 },
++	{ MT8173_TS4 },
++	{ MT8173_TS2, MT8173_TS3 },
++	{ MT8173_TS2 },
++	{ MT8173_TS2 },
++	{ MT8173_TS2 },
++};
++
++static const struct mtk_thermal_data mt6797_thermal_data = {
++	.auxadc_channel = MT8173_TEMP_AUXADC_CHANNEL,
++	.num_banks = 6,
++	.num_sensors = MT8173_NUM_SENSORS,
++	.vts_index = mt8173_vts_index,
++	.cali_val = 166,
++	.num_controller = MT8173_NUM_CONTROLLER,
++	.controller_offset = mt8173_tc_offset,
++	.need_switch_bank = true,
++	.bank_data = {
++		{ .num_sensors = 1, .sensors = mt6797_bank_data[0] },
++		{ .num_sensors = 1, .sensors = mt6797_bank_data[1] },
++		{ .num_sensors = 2, .sensors = mt6797_bank_data[2] },
++		{ .num_sensors = 1, .sensors = mt6797_bank_data[3] },
++		{ .num_sensors = 1, .sensors = mt6797_bank_data[4] },
++		{ .num_sensors = 1, .sensors = mt6797_bank_data[5] },
++	},
++	.msr = mt8173_msr,
++	.adcpnp = mt8173_adcpnp,
++	.sensor_mux_values = mt8173_mux_values,
++	.version = MTK_THERMAL_V1,
++};
++
+ /*
+  * The MT2701 thermal controller has one bank, which can read up to
+  * three temperature sensors simultaneously. The MT2701 has a total of 3
+@@ -1133,6 +1170,10 @@ static int mtk_thermal_get_calibration_data(struct device *dev,
+ }
+ 
+ static const struct of_device_id mtk_thermal_of_match[] = {
++	{
++		.compatible = "mediatek,mt6797-thermal",
++		.data = (void *)&mt6797_thermal_data,
++	},
+ 	{
+ 		.compatible = "mediatek,mt8173-thermal",
+ 		.data = (void *)&mt8173_thermal_data,

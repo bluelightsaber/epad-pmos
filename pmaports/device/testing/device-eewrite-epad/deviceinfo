@@ -1,0 +1,36 @@
+# Reference: <https://postmarketos.org/deviceinfo>
+# Please use double quotes only. You can source this file in shell scripts.
+
+deviceinfo_format_version="0"
+deviceinfo_name="Eewrite E-PAD"
+deviceinfo_manufacturer="Eewrite"
+deviceinfo_codename="eewrite-epad"
+deviceinfo_year="2019"
+deviceinfo_dtb="mediatek/mt6797-epad"
+deviceinfo_append_dtb="true"
+deviceinfo_arch="aarch64"
+
+# Device related
+deviceinfo_chassis="tablet"
+deviceinfo_keyboard="false"
+deviceinfo_external_storage="false"
+deviceinfo_screen_width="1404"
+deviceinfo_screen_height="1872"
+deviceinfo_getty="ttyMT0;921600"
+
+# Bootloader related (lk: Android boot image v0; modern arm64 kernel at 0x40200000)
+deviceinfo_flash_method="fastboot"
+deviceinfo_generate_bootimg="true"
+deviceinfo_bootimg_mtk_mkimage="false"
+deviceinfo_header_version="0"
+deviceinfo_flash_pagesize="2048"
+deviceinfo_flash_offset_base="0x40078000"
+deviceinfo_flash_offset_kernel="0x00188000"
+deviceinfo_flash_offset_ramdisk="0x04f88000"
+deviceinfo_flash_offset_second="0x00e88000"
+deviceinfo_flash_offset_tags="0x03f88000"
+# lk prepends "slub_debug=OFZPU slub_max_order=0"; that combination trips a slab/memcg bug in 7.2
+deviceinfo_kernel_cmdline="bootopt=64S3,32N2,64N2 maxcpus=10 slub_debug=-"
+
+# boot is only 16 MiB: keep the big systemd initramfs bits in initramfs-extra
+deviceinfo_create_initfs_extra="true"

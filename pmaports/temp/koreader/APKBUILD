@@ -1,0 +1,118 @@
+# Maintainer: Antoine Martin (ayakael) <dev@ayakael.net>
+pkgname=koreader
+pkgver=2026.07.2
+pkgrel=92
+pkgdesc="An ebook reader application supporting PDF, DjVu, EPUB, FB2 and many more formats (with the E-PAD port)"
+# s390x|riscv64|ppc64le|loongarch64: FTBFS
+# armhf|armv7|x86: Tests fail, segmentation fault
+arch="x86_64 aarch64"
+url="https://github.com/koreader/koreader/"
+license="AGPL-3.0-only"
+options="!check" # E-PAD: build sin -march=native (CI=1)
+depends="
+	bash
+	so:libSDL3.so.0
+	procps-ng
+	"
+makedepends="
+	bash
+	sdl3
+	autoconf
+	automake
+	cmake
+	coreutils
+	curl
+	diffutils
+	findutils
+	gettext
+	grep
+	libtool
+	linux-headers
+	meson
+	nasm
+	ninja-build
+	perl
+	pkgconf
+	wget
+	"
+source="
+	https://ayakael.net/api/packages/mirrors/generic/koreader/v$pkgver/koreader-v$pkgver.tar.gz
+	koreader-sh-enable-ko-multiuser.patch
+	lj-wpaclient-59cac3b591ca60ca57b6d729573fb6bb0c4e5035.tar.gz::https://github.com/koreader/lj-wpaclient/archive/59cac3b591ca60ca57b6d729573fb6bb0c4e5035.tar.gz
+	epad-device-probe.patch
+	epad-input-platform.patch
+	input-epad.h
+	framebuffer_epad.lua
+	epad-device.lua
+	epad-powerd.lua
+	"
+subpackages="$pkgname-doc"
+builddir="$srcdir"/$pkgname-v$pkgver
+
+# has vendored copies of system libraries
+sonameprefix="$pkgname:"
+
+prepare() {
+	default_prepare
+
+	# no need to test manually set version
+	rm "$builddir"/spec/unit/version_spec.lua
+
+	# E-PAD: evdev input platform header
+	cp "$srcdir"/input-epad.h "$builddir"/base/input/
+}
+
+build() {
+	# add ninja bin to path
+	export PATH="$PATH":/usr/lib/ninja-build/bin
+
+	# default target is emulator build
+	make TARGET= KODEBUG= VERBOSE= CI=1
+
+	# E-PAD: the emulator build has no evdev input module (libkoreader-input); build it for the E-PAD platform
+	_luajit_inc="$(dirname "$(find "$builddir"/base/build -path '*staging/include/*' -name luajit.h | head -1)")"
+	${CC:-gcc} $CFLAGS -shared -fPIC -fvisibility=hidden -DEPAD -I"$_luajit_inc" \
+		-o "$builddir"/libkoreader-input.so "$builddir"/base/input/input.c
+}
+
+check() {
+	KODEBUG= TARGET= VERBOSE= ./base/utils/fake_tty.py make --assume-old=base testfront
+}
+
+package() {
+	install -Dm644 "$builddir"/platform/linux/koreader.desktop -t "$pkgdir"/usr/share/applications/
+	install -Dm644 "$builddir"/resources/koreader.png -t "$pkgdir"/usr/share/pixmaps/
+	install -Dm644 "$builddir"/platform/linux/koreader.1 -t "$pkgdir"/usr/share/man/man1/
+
+	mkdir -p "$pkgdir"/usr/lib
+	cp -RL "$builddir"/koreader-emulator-*/koreader "$pkgdir"/usr/lib/koreader
+
+	# bin link
+	mkdir -p "$pkgdir"/usr/bin
+	ln -s ../lib/koreader/koreader.sh "$pkgdir"/usr/bin/koreader
+
+	# delete debug files
+	find "$pkgdir" -name '*.dbg' -delete
+
+	# version information
+	echo "v$pkgver" > "$pkgdir"/usr/lib/koreader/git-rev
+
+	# E-PAD port: device, framebuffer (T1000 refresh), evdev input, wpa_supplicant client
+	local _ko="$pkgdir"/usr/lib/koreader
+	install -Dm644 "$srcdir"/framebuffer_epad.lua "$_ko"/ffi/framebuffer_epad.lua
+	install -Dm644 "$srcdir"/epad-device.lua "$_ko"/frontend/device/epad/device.lua
+	install -Dm644 "$srcdir"/epad-powerd.lua "$_ko"/frontend/device/epad/powerd.lua
+	install -Dm755 "$builddir"/libkoreader-input.so "$_ko"/libs/libkoreader-input.so
+	install -Dm644 "$srcdir"/lj-wpaclient-59cac3b591ca60ca57b6d729573fb6bb0c4e5035/*.lua -t "$_ko"/common/lj-wpaclient/
+}
+sha512sums="
+e5abe05efa0d36ab3933f7838481d20c1113d9f481a82cc600b9b3786afd0c7c3a7f7f2d0d48806c3a885bdf9f66d749857aeb37c7419dc3b017d5fcc6c67844  koreader-v2026.07.2.tar.gz
+e5f12aecd9ae4ff8b10a9f81dbdd60d43e3d79d54093febe7539ba4831b3327fcfd70b3b5daa70ec74881849c1907abdec8545a52ff15613a3442edc6c430df0  koreader-sh-enable-ko-multiuser.patch
+373bdf21535f90f87e001376aacee2128bec8b0334cb74429b53e5a83714ed880fbab56397520afdd39a123a2f0cb44429f43b5579cd1b95c4d6c3a5bc9ff9b7  lj-wpaclient-59cac3b591ca60ca57b6d729573fb6bb0c4e5035.tar.gz
+a61f792714947ab195632257378d9d7de7b4db94a2f28b141254a04484b02bfb2d74405288489ab80f9563afa20cfa4cfb04be5752c7d5d0eb803b3fd5e2ec37  epad-device-probe.patch
+95c1e24a3081e7e523b4e63d1296a039e7f5bfc6522a43982671299e4f0258223f412bd714ce0a351f1edd371b895996caf2ff3dd214e983e898677b63ae727a  epad-input-platform.patch
+b1f5e34917f82fa4cfedb2c9f9c64b7eb3e0fed32b743768c1bb1a8549cd76db8151f9ba5fdc28ca7f897ddd2a9710551a5283c774cdccd59d9476e1b357368f  input-epad.h
+e5cfe17e8ef7e5e8e9e20a0a44ef1cd3406c5f7702be607c8979587cecdfde71c533bfd36cfdf6ecebb6a8cb8dc95f4699fc3051cba91b32595f8fd244b3e2c0  framebuffer_epad.lua
+ae28e77ac4ce9438c2a7a1826ef78777669490d952579907e0dc72fee3218d142c002b6a5f2d34f87ea772f3b0703c4ad93311107bdb204943f01a2655923882  epad-device.lua
+fa52ef86135c2bb528a5828d5c3f23daf394d9fe74a49ca0097b23aa54edd2eaf64b8e5fa4ec7f6f69dae876785df1e5183835676a006c1685264593eedf8f8c  epad-powerd.lua
+"

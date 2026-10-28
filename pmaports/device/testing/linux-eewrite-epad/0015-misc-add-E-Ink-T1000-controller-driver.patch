@@ -1,0 +1,528 @@
+From 9183e20d9fdbc7657d04010eee7942cd3b85ca5b Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 00:20:04 +0200
+Subject: [PATCH 15/20] misc: add E Ink T1000 controller driver
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/misc/Kconfig      |   7 +
+ drivers/misc/Makefile     |   1 +
+ drivers/misc/eink-t1000.c | 482 ++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 490 insertions(+)
+ create mode 100644 drivers/misc/eink-t1000.c
+
+diff --git a/drivers/misc/Kconfig b/drivers/misc/Kconfig
+index 390256ed9..028c9b2e3 100644
+--- a/drivers/misc/Kconfig
++++ b/drivers/misc/Kconfig
+@@ -341,6 +341,13 @@ config APDS9802ALS
+ 	  This driver can also be built as a module.  If so, the module
+ 	  will be called apds9802als.
+ 
++config EINK_T1000
++	tristate "E Ink T1000 controller (E-PAD)"
++	depends on I2C && GPIOLIB
++	help
++	  Control interface (refresh mode, GC, temperature) for the E Ink T1000
++	  controller of the E-PAD tablet.
++
+ config ISL29003
+ 	tristate "Intersil ISL29003 ambient light sensor"
+ 	depends on I2C && SYSFS
+diff --git a/drivers/misc/Makefile b/drivers/misc/Makefile
+index fed47c767..e3ddc7ed4 100644
+--- a/drivers/misc/Makefile
++++ b/drivers/misc/Makefile
+@@ -74,3 +74,4 @@ obj-$(CONFIG_MCHP_LAN966X_PCI)	+= lan966x-pci.o
+ obj-y				+= keba/
+ obj-y				+= amd-sbi/
+ obj-$(CONFIG_MISC_RP1)		+= rp1/
++obj-$(CONFIG_EINK_T1000)	+= eink-t1000.o
+diff --git a/drivers/misc/eink-t1000.c b/drivers/misc/eink-t1000.c
+new file mode 100644
+index 000000000..980bdfeb1
+--- /dev/null
++++ b/drivers/misc/eink-t1000.c
+@@ -0,0 +1,482 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Control del controlador E-Ink T1000 de la E-PAD (I2C 0x06).
++ *
++ * La imagen llega al T1000 por MIPI DSI y el T1000 la pinta solo; este driver solo controla el modo de
++ * refresco (waveform), las limpiezas GC y lee temperatura, VCOM y versión. Protocolo reconstruido del
++ * driver de fábrica (notes/t1000-driver-re.md): se escribe un paquete {0x10, ORDEN, ...} y, si hay
++ * respuesta, se espera a HRDY = 1 y se lee del registro 0x34 (palabras de 16 bits little-endian).
++ *
++ * Interfaz compatible con /dev/t1000 de fábrica: ioctl 0x60 (leer modo), 0x61 (fijar modo), 0x43 (leer
++ * VCOM), 0x5700 (temperatura), 0x100 (estado del probe); read() devuelve la versión del firmware.
++ * Además, atributos sysfs: mode, temperature, vcom, version, waveform, hrdy.
++ *
++ * DSI (opcional, propiedad mediatek,dsi-base): lk deja el DSI0 en modo vídeo (~55 fps leyendo el framebuffer de
++ * la DRAM continuamente, ~100 mA). El T1000 solo pinta al recibir la orden de modo (0x61) y lee la imagen del
++ * DSI mientras pinta (sin vídeo pinta basura). Con `video` = 0 (por defecto, parámetro video_idle_off) el vídeo
++ * se enciende solo durante cada orden de modo: vídeo → 2 fotogramas → orden → HRDY 0 → HRDY 1 → parar.
++ * `video` = 1: emisión continua como la deja lk.
++ *
++ * OVL (opcional, propiedad mediatek,ovl-base): al cargar se apagan las capas que lk compone encima del
++ * framebuffer (el aviso de bootloader desbloqueado).
++ *
++ * A propósito NO implementa: escribir VCOM (0x42, calibración del panel), el modo 4 (mixed25 cuelga el
++ * T1000), dormir/sueño ligero (requieren manejar el pin de despertar), autorefresco ni actualización de
++ * firmware/waveform.
++ */
++#include <linux/delay.h>
++#include <linux/fs.h>
++#include <linux/gpio/consumer.h>
++#include <linux/i2c.h>
++#include <linux/io.h>
++#include <linux/miscdevice.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/of.h>
++#include <linux/uaccess.h>
++
++#define T1000_RESP_REG		0x34
++
++#define T1000_CMD_TEMP		0x33
++#define T1000_CMD_VCOM		0x42
++#define T1000_CMD_GET_MODE	0x60
++#define T1000_CMD_SET_MODE	0x61
++#define T1000_CMD_SYSINFO	0xe0
++
++#define T1000_IOC_GET_VCOM	0x43
++#define T1000_IOC_SET_VCOM	0x42
++#define T1000_IOC_GET_MODE	0x60
++#define T1000_IOC_SET_MODE	0x61
++#define T1000_IOC_PROBE		0x100
++#define T1000_IOC_TEMP		0x5700
++
++#define T1000_SYSINFO_LEN	40
++
++struct t1000 {
++	struct i2c_client *client;
++	struct gpio_desc *hrdy;
++	struct mutex lock;
++	struct miscdevice misc;
++	char version[17];
++	char waveform[17];
++	unsigned int width, height;
++	void __iomem *dsi;
++	bool video;
++};
++
++#define DSI_START		0x00
++#define DSI_MODE_CTRL		0x14
++#define DSI_MODE_SYNC_PULSE	1
++
++#define OVL_SRC_CON		0x2c
++#define OVL_SRC_CON_L0		BIT(0)
++
++static bool video_idle_off = true;
++module_param(video_idle_off, bool, 0644);
++MODULE_PARM_DESC(video_idle_off, "parar el vídeo DSI en reposo al cargar el driver");
++
++/* Modo vídeo (emisión continua del framebuffer) o modo comando (sin emisión). Con t->lock. */
++static void t1000_dsi_video(struct t1000 *t, bool on)
++{
++	if (on == t->video)
++		return;
++	if (on) {
++		writel(DSI_MODE_SYNC_PULSE, t->dsi + DSI_MODE_CTRL);
++		writel(0, t->dsi + DSI_START);
++		writel(1, t->dsi + DSI_START);
++	} else {
++		writel(0, t->dsi + DSI_MODE_CTRL);
++	}
++	t->video = on;
++}
++
++static bool t1000_mode_allowed(unsigned int mode)
++{
++	switch (mode) {
++	case 0x00:	/* lectura */
++	case 0x01:	/* mixto */
++	case 0x02:	/* navegación */
++	case 0x10:	/* despertar */
++	case 0x11:	/* GC (refresco completo) */
++		return true;
++	default:
++		return false;
++	}
++}
++
++/* Espera a que el T1000 esté libre (HRDY = 1). */
++static int t1000_wait_ready(struct t1000 *t, unsigned int timeout_ms)
++{
++	unsigned int waited = 0;
++
++	while (!gpiod_get_value_cansleep(t->hrdy)) {
++		if (waited >= timeout_ms)
++			return -ETIMEDOUT;
++		usleep_range(10000, 11000);
++		waited += 10;
++	}
++	return 0;
++}
++
++static int t1000_write(struct t1000 *t, const u8 *buf, int len)
++{
++	int ret = i2c_master_send(t->client, buf, len);
++
++	if (ret < 0)
++		return ret;
++	return ret == len ? 0 : -EIO;
++}
++
++/* Como el driver de fábrica: escribir el registro y leer en dos transferencias separadas. */
++static int t1000_read_resp(struct t1000 *t, u8 *buf, int len)
++{
++	u8 reg = T1000_RESP_REG;
++	int ret;
++
++	ret = t1000_write(t, &reg, 1);
++	if (ret)
++		return ret;
++	ret = i2c_master_recv(t->client, buf, len);
++	if (ret < 0)
++		return ret;
++	return ret == len ? 0 : -EIO;
++}
++
++/* Envía una orden y, si rlen > 0, lee la respuesta. Con t->lock tomado. */
++static int t1000_command(struct t1000 *t, const u8 *cmd, int clen, u8 *resp, int rlen)
++{
++	int ret;
++
++	ret = t1000_write(t, cmd, clen);
++	if (ret || !rlen)
++		return ret;
++	/* Si HRDY no sube a tiempo se intenta leer igualmente, como epadi2c. */
++	t1000_wait_ready(t, 1000);
++	return t1000_read_resp(t, resp, rlen);
++}
++
++static int t1000_read_word(struct t1000 *t, const u8 *cmd, int clen)
++{
++	u8 r[2];
++	int ret;
++
++	mutex_lock(&t->lock);
++	ret = t1000_command(t, cmd, clen, r, sizeof(r));
++	mutex_unlock(&t->lock);
++	return ret ? ret : r[0] | (r[1] << 8);
++}
++
++static int t1000_get_mode(struct t1000 *t)
++{
++	static const u8 cmd[] = { 0x10, T1000_CMD_GET_MODE, 0x00 };
++
++	return t1000_read_word(t, cmd, sizeof(cmd));
++}
++
++static int t1000_get_temp(struct t1000 *t)
++{
++	static const u8 cmd[] = { 0x10, T1000_CMD_TEMP, 0x00, 0x00, 0x00 };
++
++	return t1000_read_word(t, cmd, sizeof(cmd));
++}
++
++static int t1000_get_vcom(struct t1000 *t)
++{
++	/* Subargumento 3 = leer. */
++	static const u8 cmd[] = { 0x10, T1000_CMD_VCOM, 0x00, 0x00, 0x00, 0x03, 0x00 };
++
++	return t1000_read_word(t, cmd, sizeof(cmd));
++}
++
++static int t1000_set_mode(struct t1000 *t, unsigned int mode)
++{
++	u8 cmd[] = { 0x10, T1000_CMD_SET_MODE, 0x00, 0x00, 0x00, mode, 0x00 };
++	int ret;
++
++	if (!t1000_mode_allowed(mode))
++		return -EPERM;
++
++	mutex_lock(&t->lock);
++	/* El driver de fábrica no manda la orden si el T1000 no está listo. */
++	ret = t1000_wait_ready(t, 5000);
++	if (ret)
++		goto out;
++	if (t->dsi && !t->video) {
++		t1000_dsi_video(t, true);
++		msleep(40);	/* dos fotogramas a ~55 fps */
++		ret = t1000_write(t, cmd, sizeof(cmd));
++		if (!ret) {
++			unsigned int waited;
++
++			/* HRDY baja al empezar a pintar (si no baja en 200 ms, no hay refresco) */
++			for (waited = 0; waited < 200 && gpiod_get_value_cansleep(t->hrdy); waited += 10)
++				usleep_range(10000, 11000);
++			t1000_wait_ready(t, 5000);
++		}
++		t1000_dsi_video(t, false);
++	} else {
++		ret = t1000_write(t, cmd, sizeof(cmd));
++	}
++out:
++	mutex_unlock(&t->lock);
++	return ret;
++}
++
++/* Copia una cadena de la respuesta (bytes por parejas intercambiados) hasta el primer carácter no imprimible. */
++static void t1000_copy_swapped(char *dst, size_t size, const u8 *src, int len)
++{
++	size_t n = 0;
++	int i;
++
++	for (i = 0; i < len && n < size - 1; i++) {
++		u8 c = src[i ^ 1];
++
++		if (c < 32 || c >= 127)
++			break;
++		dst[n++] = c;
++	}
++	dst[n] = '\0';
++}
++
++/*
++ * sysinfo (0xE0), 40 bytes: ancho y alto (16 bits), 4 bytes sin identificar, versión del firmware (16
++ * bytes, p. ej. "v.000.000.064") y nombre de la waveform (16 bytes, p. ej. "320_R280_AFB821_").
++ */
++static int t1000_read_sysinfo(struct t1000 *t)
++{
++	static const u8 cmd[] = { 0x10, T1000_CMD_SYSINFO, 0x00 };
++	u8 r[T1000_SYSINFO_LEN];
++	int ret;
++
++	mutex_lock(&t->lock);
++	ret = t1000_command(t, cmd, sizeof(cmd), r, sizeof(r));
++	mutex_unlock(&t->lock);
++	if (ret)
++		return ret;
++
++	t->width = r[0] | (r[1] << 8);
++	t->height = r[2] | (r[3] << 8);
++	t1000_copy_swapped(t->version, sizeof(t->version), r + 8, 16);
++	t1000_copy_swapped(t->waveform, sizeof(t->waveform), r + 24, 16);
++	return 0;
++}
++
++static ssize_t t1000_fop_read(struct file *f, char __user *buf, size_t len, loff_t *off)
++{
++	struct t1000 *t = container_of(f->private_data, struct t1000, misc);
++
++	return simple_read_from_buffer(buf, len, off, t->version, strlen(t->version));
++}
++
++static long t1000_fop_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
++{
++	struct t1000 *t = container_of(f->private_data, struct t1000, misc);
++
++	switch (cmd) {
++	case T1000_IOC_GET_MODE:
++		return t1000_get_mode(t);
++	case T1000_IOC_SET_MODE:
++		return t1000_set_mode(t, arg);
++	case T1000_IOC_GET_VCOM:
++		return t1000_get_vcom(t);
++	case T1000_IOC_TEMP:
++		return t1000_get_temp(t);
++	case T1000_IOC_PROBE:
++		return 1;
++	case T1000_IOC_SET_VCOM:
++		return -EPERM;
++	default:
++		return -ENOTTY;
++	}
++}
++
++static const struct file_operations t1000_fops = {
++	.owner = THIS_MODULE,
++	.read = t1000_fop_read,
++	.unlocked_ioctl = t1000_fop_ioctl,
++	.compat_ioctl = t1000_fop_ioctl,
++	.llseek = noop_llseek,
++};
++
++static ssize_t mode_show(struct device *dev, struct device_attribute *attr, char *buf)
++{
++	int v = t1000_get_mode(dev_get_drvdata(dev));
++
++	return v < 0 ? v : sysfs_emit(buf, "%d\n", v);
++}
++
++static ssize_t mode_store(struct device *dev, struct device_attribute *attr, const char *buf,
++			  size_t count)
++{
++	unsigned int mode;
++	int ret;
++
++	ret = kstrtouint(buf, 0, &mode);
++	if (ret)
++		return ret;
++	ret = t1000_set_mode(dev_get_drvdata(dev), mode);
++	return ret ? ret : count;
++}
++static DEVICE_ATTR_RW(mode);
++
++static ssize_t temperature_show(struct device *dev, struct device_attribute *attr, char *buf)
++{
++	int v = t1000_get_temp(dev_get_drvdata(dev));
++
++	return v < 0 ? v : sysfs_emit(buf, "%d\n", v);
++}
++static DEVICE_ATTR_RO(temperature);
++
++static ssize_t vcom_show(struct device *dev, struct device_attribute *attr, char *buf)
++{
++	int v = t1000_get_vcom(dev_get_drvdata(dev));
++
++	return v < 0 ? v : sysfs_emit(buf, "%d\n", v);
++}
++static DEVICE_ATTR_RO(vcom);
++
++static ssize_t version_show(struct device *dev, struct device_attribute *attr, char *buf)
++{
++	struct t1000 *t = dev_get_drvdata(dev);
++
++	return sysfs_emit(buf, "%s\n", t->version);
++}
++static DEVICE_ATTR_RO(version);
++
++static ssize_t waveform_show(struct device *dev, struct device_attribute *attr, char *buf)
++{
++	struct t1000 *t = dev_get_drvdata(dev);
++
++	return sysfs_emit(buf, "%s\n", t->waveform);
++}
++static DEVICE_ATTR_RO(waveform);
++
++static ssize_t hrdy_show(struct device *dev, struct device_attribute *attr, char *buf)
++{
++	struct t1000 *t = dev_get_drvdata(dev);
++
++	return sysfs_emit(buf, "%d\n", gpiod_get_value_cansleep(t->hrdy));
++}
++static DEVICE_ATTR_RO(hrdy);
++
++static ssize_t video_show(struct device *dev, struct device_attribute *attr, char *buf)
++{
++	struct t1000 *t = dev_get_drvdata(dev);
++
++	return sysfs_emit(buf, "%d\n", t->video);
++}
++
++static ssize_t video_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t n)
++{
++	struct t1000 *t = dev_get_drvdata(dev);
++	bool on;
++
++	if (!t->dsi)
++		return -ENODEV;
++	if (kstrtobool(buf, &on))
++		return -EINVAL;
++	mutex_lock(&t->lock);
++	t1000_dsi_video(t, on);
++	mutex_unlock(&t->lock);
++	return n;
++}
++static DEVICE_ATTR_RW(video);
++
++static struct attribute *t1000_attrs[] = {
++	&dev_attr_video.attr,
++	&dev_attr_mode.attr,
++	&dev_attr_temperature.attr,
++	&dev_attr_vcom.attr,
++	&dev_attr_version.attr,
++	&dev_attr_waveform.attr,
++	&dev_attr_hrdy.attr,
++	NULL
++};
++ATTRIBUTE_GROUPS(t1000);
++
++static void t1000_misc_deregister(void *misc)
++{
++	misc_deregister(misc);
++}
++
++static int t1000_probe(struct i2c_client *client)
++{
++	struct device *dev = &client->dev;
++	struct t1000 *t;
++	u32 dsi_base, ovl_base;
++	int ret;
++
++	t = devm_kzalloc(dev, sizeof(*t), GFP_KERNEL);
++	if (!t)
++		return -ENOMEM;
++	t->client = client;
++	mutex_init(&t->lock);
++	i2c_set_clientdata(client, t);
++
++	t->hrdy = devm_gpiod_get(dev, "hrdy", GPIOD_IN);
++	if (IS_ERR(t->hrdy))
++		return dev_err_probe(dev, PTR_ERR(t->hrdy), "sin GPIO hrdy\n");
++
++	if (!of_property_read_u32(dev->of_node, "mediatek,dsi-base", &dsi_base)) {
++		t->dsi = devm_ioremap(dev, dsi_base, 0x100);
++		if (!t->dsi)
++			return -ENOMEM;
++		t->video = readl(t->dsi + DSI_MODE_CTRL) != 0;
++		if (video_idle_off)
++			t1000_dsi_video(t, false);
++	}
++
++	/*
++	 * OVL (opcional, propiedad mediatek,ovl-base): lk compone encima del framebuffer (capa 0) otras capas, p. ej.
++	 * el aviso «Orange State» de bootloader desbloqueado en la capa 3. En Android las quita SurfaceFlinger; aquí
++	 * se apagan todas menos la 0 (OVL_SRC_CON, 0x2c).
++	 */
++	if (!of_property_read_u32(dev->of_node, "mediatek,ovl-base", &ovl_base)) {
++		void __iomem *ovl = ioremap(ovl_base, 0x100);
++
++		if (ovl) {
++			u32 con = readl(ovl + OVL_SRC_CON);
++
++			if (con & ~OVL_SRC_CON_L0)
++				dev_info(dev, "capas del OVL de lk apagadas (SRC_CON 0x%x)\n", con);
++			writel(con & OVL_SRC_CON_L0, ovl + OVL_SRC_CON);
++			iounmap(ovl);
++		}
++	}
++
++	/* Si duerme no responde; no es motivo para fallar (la interfaz sigue siendo útil al despertar). */
++	ret = t1000_read_sysinfo(t);
++	if (ret)
++		dev_warn(dev, "no responde (%d); ¿dormido?\n", ret);
++	else
++		dev_info(dev, "T1000 %ux%u, firmware %s, waveform %s, temperatura %d, modo %d\n",
++			 t->width, t->height, t->version, t->waveform, t1000_get_temp(t), t1000_get_mode(t));
++
++	t->misc.minor = MISC_DYNAMIC_MINOR;
++	t->misc.name = "t1000";
++	t->misc.fops = &t1000_fops;
++	t->misc.parent = dev;
++	ret = misc_register(&t->misc);
++	if (ret)
++		return ret;
++	return devm_add_action_or_reset(dev, t1000_misc_deregister, &t->misc);
++}
++
++static const struct of_device_id t1000_of_match[] = {
++	{ .compatible = "eink,t1000" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, t1000_of_match);
++
++static struct i2c_driver t1000_driver = {
++	.driver = {
++		.name = "eink-t1000",
++		.of_match_table = t1000_of_match,
++		.dev_groups = t1000_groups,
++	},
++	.probe = t1000_probe,
++};
++module_i2c_driver(t1000_driver);
++
++MODULE_DESCRIPTION("Control del controlador E-Ink T1000 (E-PAD)");
++MODULE_LICENSE("GPL");

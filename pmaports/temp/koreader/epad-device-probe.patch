@@ -1,0 +1,18 @@
+--- a/frontend/device.lua
++++ b/frontend/device.lua
+@@ -37,6 +37,15 @@
+         return require("device/cervantes/device")
+     end
+ 
++    local epad_compat = io.open("/proc/device-tree/compatible")
++    if epad_compat then
++        local compat = epad_compat:read("*all") or ""
++        epad_compat:close()
++        if compat:find("eewrite,epad-pro", 1, true) then
++            return require("device/epad/device")
++        end
++    end
++
+     -- add new ports here:
+     --
+     -- if --[[ implement a proper test instead --]] false then

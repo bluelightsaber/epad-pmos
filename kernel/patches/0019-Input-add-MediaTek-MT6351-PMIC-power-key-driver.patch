@@ -1,0 +1,156 @@
+From 5d75a7f13a5ee96fe94a920d8a951e4c4adc03e7 Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Sat, 24 Oct 2026 02:16:19 +0200
+Subject: [PATCH 19/20] Input: add MediaTek MT6351 PMIC power key driver
+
+The MT6351 raises separate PWRKEY (press) and PWRKEY_R (release)
+interrupts. gpio-keys on the press interrupt alone has to emulate the
+release, so user space cannot tell a long press from a short one.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/input/misc/Kconfig         |   7 ++
+ drivers/input/misc/Makefile        |   1 +
+ drivers/input/misc/mt6351-pwrkey.c | 103 +++++++++++++++++++++++++++++
+ 3 files changed, 111 insertions(+)
+ create mode 100644 drivers/input/misc/mt6351-pwrkey.c
+
+diff --git a/drivers/input/misc/Kconfig b/drivers/input/misc/Kconfig
+index 1f6c57dba..deaffac71 100644
+--- a/drivers/input/misc/Kconfig
++++ b/drivers/input/misc/Kconfig
+@@ -337,6 +337,13 @@ config INPUT_APANEL
+ 	 To compile this driver as a module, choose M here: the module will
+ 	 be called apanel.
+ 
++config INPUT_MT6351_PWRKEY
++	tristate "MediaTek MT6351 PMIC power key"
++	depends on MTK_MT6351_IRQ || COMPILE_TEST
++	help
++	  Power key of the MediaTek MT6351 PMIC, with separate press and
++	  release interrupts (so long presses can be told apart).
++
+ config INPUT_GPIO_BEEPER
+ 	tristate "Generic GPIO Beeper support"
+ 	depends on GPIOLIB || COMPILE_TEST
+diff --git a/drivers/input/misc/Makefile b/drivers/input/misc/Makefile
+index 2281d6803..41d1fc0b5 100644
+--- a/drivers/input/misc/Makefile
++++ b/drivers/input/misc/Makefile
+@@ -58,6 +58,7 @@ obj-$(CONFIG_INPUT_MAX77693_HAPTIC)	+= max77693-haptic.o
+ obj-$(CONFIG_INPUT_MAX8925_ONKEY)	+= max8925_onkey.o
+ obj-$(CONFIG_INPUT_MAX8997_HAPTIC)	+= max8997_haptic.o
+ obj-$(CONFIG_INPUT_MC13783_PWRBUTTON)	+= mc13783-pwrbutton.o
++obj-$(CONFIG_INPUT_MT6351_PWRKEY)	+= mt6351-pwrkey.o
+ obj-$(CONFIG_INPUT_MMA8450)		+= mma8450.o
+ obj-$(CONFIG_INPUT_PALMAS_PWRBUTTON)	+= palmas-pwrbutton.o
+ obj-$(CONFIG_INPUT_PCF8574)		+= pcf8574_keypad.o
+diff --git a/drivers/input/misc/mt6351-pwrkey.c b/drivers/input/misc/mt6351-pwrkey.c
+new file mode 100644
+index 000000000..271ff7e8f
+--- /dev/null
++++ b/drivers/input/misc/mt6351-pwrkey.c
+@@ -0,0 +1,103 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Tecla de encendido del PMIC MT6351 (E-PAD).
++ *
++ * El PMIC da dos interrupciones (mt6351-irq): PWRKEY (fuente 0) al pulsar y PWRKEY_R (fuente 2) al soltar.
++ * gpio-keys con solo la primera emula la suelta al momento y no deja distinguir una pulsación larga.
++ */
++#include <linux/input.h>
++#include <linux/interrupt.h>
++#include <linux/module.h>
++#include <linux/mod_devicetable.h>
++#include <linux/platform_device.h>
++#include <linux/pm_wakeirq.h>
++#include <linux/property.h>
++
++struct mt6351_pwrkey {
++	struct input_dev *input;
++	int irq_press;
++	int irq_release;
++};
++
++static irqreturn_t mt6351_pwrkey_press(int irq, void *data)
++{
++	struct mt6351_pwrkey *key = data;
++
++	input_report_key(key->input, KEY_POWER, 1);
++	input_sync(key->input);
++	return IRQ_HANDLED;
++}
++
++static irqreturn_t mt6351_pwrkey_release(int irq, void *data)
++{
++	struct mt6351_pwrkey *key = data;
++
++	input_report_key(key->input, KEY_POWER, 0);
++	input_sync(key->input);
++	return IRQ_HANDLED;
++}
++
++static int mt6351_pwrkey_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct mt6351_pwrkey *key;
++	int ret;
++
++	key = devm_kzalloc(dev, sizeof(*key), GFP_KERNEL);
++	if (!key)
++		return -ENOMEM;
++
++	key->irq_press = platform_get_irq_byname(pdev, "press");
++	if (key->irq_press < 0)
++		return key->irq_press;
++	key->irq_release = platform_get_irq_byname(pdev, "release");
++	if (key->irq_release < 0)
++		return key->irq_release;
++
++	key->input = devm_input_allocate_device(dev);
++	if (!key->input)
++		return -ENOMEM;
++	key->input->name = "mt6351-pwrkey";
++	key->input->phys = "mt6351-pwrkey/input0";
++	key->input->id.bustype = BUS_HOST;
++	input_set_capability(key->input, EV_KEY, KEY_POWER);
++
++	ret = input_register_device(key->input);
++	if (ret)
++		return ret;
++
++	/* Las interrupciones del PMIC son anidadas (regmap por el PMIC wrapper): solo manejador en hilo. */
++	ret = devm_request_threaded_irq(dev, key->irq_press, NULL, mt6351_pwrkey_press, IRQF_ONESHOT,
++					"mt6351-pwrkey", key);
++	if (ret)
++		return dev_err_probe(dev, ret, "interrupción de pulsación\n");
++	ret = devm_request_threaded_irq(dev, key->irq_release, NULL, mt6351_pwrkey_release, IRQF_ONESHOT,
++					"mt6351-pwrkey-r", key);
++	if (ret)
++		return dev_err_probe(dev, ret, "interrupción de suelta\n");
++
++	if (device_property_read_bool(dev, "wakeup-source")) {
++		device_init_wakeup(dev, true);
++		dev_pm_set_wake_irq(dev, key->irq_press);
++	}
++
++	return 0;
++}
++
++static const struct of_device_id mt6351_pwrkey_of_match[] = {
++	{ .compatible = "mediatek,mt6351-pwrkey" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, mt6351_pwrkey_of_match);
++
++static struct platform_driver mt6351_pwrkey_driver = {
++	.probe = mt6351_pwrkey_probe,
++	.driver = {
++		.name = "mt6351-pwrkey",
++		.of_match_table = mt6351_pwrkey_of_match,
++	},
++};
++module_platform_driver(mt6351_pwrkey_driver);
++
++MODULE_DESCRIPTION("MediaTek MT6351 PMIC power key");
++MODULE_LICENSE("GPL");

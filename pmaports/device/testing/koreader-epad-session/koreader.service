@@ -1,0 +1,17 @@
+[Unit]
+Description=KOReader on the E Ink panel
+After=systemd-udev-settle.service local-fs.target
+ConditionPathExists=/dev/t1000
+
+[Service]
+Type=simple
+Environment=HOME=/var/lib/koreader
+# The text console must not draw on the framebuffer KOReader uses.
+ExecStartPre=/bin/sh -c "for v in /sys/class/vtconsole/vtcon*/bind; do echo 0 > $v; done"
+ExecStart=/usr/bin/koreader
+# Exiting from the KOReader menu must not leave a blank, unresponsive panel.
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

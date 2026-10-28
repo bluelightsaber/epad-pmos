@@ -1,0 +1,20 @@
+# Maintainer: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+pkgname=koreader-epad-session
+pkgver=1
+pkgrel=1
+pkgdesc="Start KOReader full screen at boot (E Ink tablets without a desktop)"
+url="https://github.com/koreader/koreader"
+arch="noarch"
+license="MIT"
+depends="koreader wpa_supplicant"
+options="!check"
+source="koreader.service"
+
+package() {
+	install -Dm644 "$srcdir"/koreader.service "$pkgdir"/usr/lib/systemd/system/koreader.service
+	install -d "$pkgdir"/var/lib/koreader "$pkgdir"/usr/lib/systemd/system/multi-user.target.wants
+	ln -s ../koreader.service "$pkgdir"/usr/lib/systemd/system/multi-user.target.wants/koreader.service
+}
+sha512sums="
+f865758925f694efaefe5a5af0a9d4139c36a3b6fdd4eac716eee4f89b17302d26f9b739e99e602be863c6cd1c6b39ce75da6b7f3312f79bd2ea1e1404a48491  koreader.service
+"

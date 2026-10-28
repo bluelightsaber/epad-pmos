@@ -1,0 +1,817 @@
+From 0532303600df3f92ffb64dd48fba6cf432a23e84 Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 00:20:05 +0200
+Subject: [PATCH 20/20] arm64: dts: mediatek: add Eewrite E-PAD (Epad_PRO)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm64/boot/dts/mediatek/Makefile        |   1 +
+ arch/arm64/boot/dts/mediatek/mt6797-epad.dts | 790 +++++++++++++++++++
+ 2 files changed, 791 insertions(+)
+ create mode 100644 arch/arm64/boot/dts/mediatek/mt6797-epad.dts
+
+diff --git a/arch/arm64/boot/dts/mediatek/Makefile b/arch/arm64/boot/dts/mediatek/Makefile
+index a86fb313b..449e60e48 100644
+--- a/arch/arm64/boot/dts/mediatek/Makefile
++++ b/arch/arm64/boot/dts/mediatek/Makefile
+@@ -188,3 +188,4 @@ DTC_FLAGS_mt7988a-bananapi-bpi-r4-2g5 := -@
+ DTC_FLAGS_mt7988a-bananapi-bpi-r4-pro-4e := -@
+ DTC_FLAGS_mt7988a-bananapi-bpi-r4-pro-8x := -@
+ DTC_FLAGS_mt8395-radxa-nio-12l := -@
++dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-epad.dtb
+diff --git a/arch/arm64/boot/dts/mediatek/mt6797-epad.dts b/arch/arm64/boot/dts/mediatek/mt6797-epad.dts
+new file mode 100644
+index 000000000..f3007607d
+--- /dev/null
++++ b/arch/arm64/boot/dts/mediatek/mt6797-epad.dts
+@@ -0,0 +1,790 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Eewrite/Wisky E-PAD (Epad_PRO): tablet E-Ink de 10,3" con MediaTek MT6797 (Helio X20).
++ *
++ * Primer DT para un kernel moderno (mainline 6.12). Objetivo de esta versión: arrancar, dejar el
++ * log en pstore (zona de consola de Android) y pintar en la pantalla E-Ink usando el framebuffer
++ * que deja lk (simple-framebuffer), sin driver de display de MediaTek. El controlador E-Ink T1000
++ * (i2c-1, 0x06) se maneja desde espacio de usuario por /dev/i2c-1.
++ *
++ * Datos de hardware: notes/t1000-driver-re.md y notes/kernel-y-linux.md del proyecto.
++ */
++
++/dts-v1/;
++
++#include <dt-bindings/thermal/thermal.h>
++#include "mt6797.dtsi"
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/phy/phy.h>
++#include <dt-bindings/power/mt6797-power.h>
++
++/ {
++	model = "Eewrite E-PAD (Epad_PRO)";
++	compatible = "eewrite,epad-pro", "mediatek,mt6797";
++
++	/* Misma numeración de buses I²C que Android (sin alias, mainline numera desde 0). */
++	aliases {
++		i2c0 = &i2c0;
++		i2c1 = &i2c1;
++		i2c2 = &i2c2;
++		i2c3 = &i2c3;
++		i2c4 = &i2c4;
++	};
++
++	/* Alimentación del digitalizador del lápiz (DT de fábrica: touchpen@, pen_pwr33/pen_pwr18 = salida alta). */
++	pen_3v3: regulator-pen-3v3 {
++		compatible = "regulator-fixed";
++		regulator-name = "pen-3v3";
++		regulator-always-on;	/* que el chip arranque una sola vez */
++		regulator-min-microvolt = <3300000>;
++		regulator-max-microvolt = <3300000>;
++		gpio = <&pio 43 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++	};
++
++	pen_1v8: regulator-pen-1v8 {
++		compatible = "regulator-fixed";
++		regulator-name = "pen-1v8";
++		regulator-always-on;	/* que el chip arranque una sola vez */
++		regulator-min-microvolt = <1800000>;
++		regulator-max-microvolt = <1800000>;
++		gpio = <&pio 42 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++	};
++
++	memory@40000000 {
++		device_type = "memory";
++		/* 4 GB; lk lo sobrescribe con el mapa real. */
++		reg = <0 0x40000000 1 0x00000000>;
++	};
++
++	chosen {
++		#address-cells = <2>;
++		#size-cells = <2>;
++		ranges;
++
++		/* Framebuffer que lk deja configurado y que el DSI sigue emitiendo al T1000: el log de lk dice
++		 * «FB base = 0xbdc00000, FB size = 0x2380000» (el atag videolfb-fb_base 0x5e605000 NO es el fb).
++		 * Primera página: 1872x1404, 32 bpp, línea de 7552 B (como el mtkfb del kernel de fábrica). */
++		framebuffer@bdc00000 {
++			compatible = "simple-framebuffer";
++			reg = <0 0xbdc00000 0 0x00a1d000>;	/* 7552 × 1404 alineado a página (fbdev redondea smem_len hacia abajo) */
++			width = <1872>;
++			height = <1404>;
++			stride = <7552>;
++			format = "a8r8g8b8";
++			/* el motor de display que lee este fb (y lo pasa al T1000) vive en el dominio MM */
++			power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>;
++			status = "okay";
++		};
++	};
++
++	battery: battery {
++		compatible = "simple-battery";
++		constant-charge-current-max-microamp = <1984000>;
++		constant-charge-voltage-max-microvolt = <4352000>;
++		precharge-current-microamp = <512000>;
++		charge-term-current-microamp = <128000>;
++	};
++
++	wmt: wmt {
++		compatible = "mediatek,mt6797-wmt";
++		interrupts = <GIC_SPI 284 IRQ_TYPE_LEVEL_LOW>;
++		consys = <&consys>;
++		btif = <&btif>;
++		/* WMT_SOC.cfg de la E-PAD: coex_wmt_ant_mode = 1, co_clock_flag = 0 (TCXO externo). */
++		mediatek,antenna-mode = /bits/ 8 <1>;
++		mediatek,fm-transport = /bits/ 8 <2>;
++	};
++
++	wlan {
++		compatible = "mediatek,mt6797-wlan";
++		mediatek,wmt = <&wmt>;
++		/* NVRAM WIFI de esta unidad (512 bytes, sin la suma final de 2 bytes del fichero de Android). */
++		mediatek,nvram-firmware = "mediatek/mt6797-epad-wifi-nvram.bin";
++	};
++
++	bluetooth {
++		compatible = "mediatek,mt6797-bluetooth";
++		mediatek,wmt = <&wmt>;
++	};
++
++	reserved-memory {
++		#address-cells = <2>;
++		#size-cells = <2>;
++		ranges;
++
++		/* CONNSYS: 2 MB alineados a 2 MB (consys-reserve-memory de fábrica). */
++		consys_emi: consys-emi-memory {
++			compatible = "mediatek,consys-reserve-memory";
++			no-map;
++			size = <0 0x200000>;
++			alignment = <0 0x200000>;
++			alloc-ranges = <0 0x40000000 0 0x80000000>;
++		};
++
++		/* Programas PCM del SPM (spm-reserve-memory de fábrica: por debajo de 0xc0000000). */
++		spm_pcm: spm-reserve-memory {
++			no-map;
++			size = <0 0x16000>;
++			alignment = <0 0x10000>;
++			alloc-ranges = <0 0x40000000 0 0x80000000>;
++		};
++
++		/* Zonas fijas del firmware (DT de fábrica y /proc/iomem de Android). */
++		spm-dummy@40000000 {
++			reg = <0 0x40000000 0 0x1000>;
++			no-map;
++		};
++
++		/* ram_console + pstore + minirdump de MediaTek: 0x44400000-0x44500000, salvo la zona de
++		 * consola de pstore que usamos abajo como ramoops. */
++		mtk-ram-console@44400000 {
++			reg = <0 0x44400000 0 0x000bf000>;
++			no-map;
++		};
++
++		/* Consola de pstore de Android (layout MediaTek: dump 0xaf000, consola 0x10000 en 0x444bf000).
++		 * Escribiendo aquí, Android muestra este log en /sys/fs/pstore/console-ramoops al volver. */
++		ramoops@444bf000 {
++			compatible = "ramoops";
++			reg = <0 0x444bf000 0 0x10000>;
++			console-size = <0x10000>;
++			record-size = <0>;
++			ftrace-size = <0>;
++			pmsg-size = <0>;
++		};
++
++		mtk-pstore-rest@444cf000 {
++			reg = <0 0x444cf000 0 0x00031000>;
++			no-map;
++		};
++
++		atf@44600000 {
++			reg = <0 0x44600000 0 0x70000>;
++			no-map;
++		};
++
++		preloader@44800000 {
++			reg = <0 0x44800000 0 0x100000>;
++			no-map;
++		};
++
++		lk@46000000 {
++			reg = <0 0x46000000 0 0x400000>;
++			no-map;
++		};
++
++		/* Huecos de RAM reservados en Android (/proc/iomem). Se respetan por prudencia. */
++		hole@88000000 {
++			reg = <0 0x88000000 0 0x200000>;
++			no-map;
++		};
++
++		hole@8f000000 {
++			reg = <0 0x8f000000 0 0x1000000>;
++			no-map;
++		};
++
++		hole@b2000000 {
++			reg = <0 0xb2000000 0 0x7000000>;
++			no-map;
++		};
++
++		hole@bd7e0000 {
++			reg = <0 0xbd7e0000 0 0x16000>;
++			no-map;
++		};
++
++		hole@bd800000 {
++			reg = <0 0xbd800000 0 0x2800000>;
++			no-map;
++		};
++	};
++};
++
++/* lk recorre /cpus/cpu-map/cluster%d/core%d antes de saltar al kernel (cadena en lk.bin); sin cpu-map
++ * (mainline no lo trae) el kernel no llega a arrancar. Topología como en el DT de fábrica:
++ * cluster0 = 4×A53, cluster1 = 4×A53, cluster2 = 2×A72. */
++&{/cpus} {
++	cpu-map {
++		cluster0 {
++			core0 { cpu = <&cpu0>; };
++			core1 { cpu = <&cpu1>; };
++			core2 { cpu = <&cpu2>; };
++			core3 { cpu = <&cpu3>; };
++		};
++		cluster1 {
++			core0 { cpu = <&cpu4>; };
++			core1 { cpu = <&cpu5>; };
++			core2 { cpu = <&cpu6>; };
++			core3 { cpu = <&cpu7>; };
++		};
++		cluster2 {
++			core0 { cpu = <&cpu8>; };
++			core1 { cpu = <&cpu9>; };
++		};
++	};
++};
++
++/* PMIC wrapper + PMIC MT6351. El preloader ya deja el wrapper inicializado. LDO: solo los que Android tiene
++ * encendidos, todos siempre activos (driver mínimo drivers/regulator/mt6351-regulator.c). */
++/ {
++	pwrap: pwrap@1000d000 {
++		compatible = "mediatek,mt6797-pwrap";
++		reg = <0 0x1000d000 0 0x1000>;
++		reg-names = "pwrap";
++		interrupts = <GIC_SPI 178 IRQ_TYPE_LEVEL_HIGH>;
++		clocks = <&infrasys CLK_INFRA_PMIC_AP>, <&infrasys CLK_INFRA_PMIC_TMR>;
++		clock-names = "spi", "wrap";
++
++		pmic: pmic {
++			compatible = "mediatek,mt6351";
++
++			regulators {
++				mt6351_va18: ldo_va18 {
++					regulator-name = "va18";
++					regulator-always-on;
++				};
++				mt6351_vtcxo24: ldo_vtcxo24 {
++					regulator-name = "vtcxo24";
++					regulator-always-on;
++				};
++				mt6351_vcn28: ldo_vcn28 {
++					regulator-name = "vcn28";
++					regulator-always-on;
++				};
++				mt6351_vusb33: ldo_vusb33 {
++					regulator-name = "vusb33";
++					regulator-always-on;
++				};
++				mt6351_vemc: ldo_vemc {
++					regulator-name = "vemc";
++					regulator-always-on;
++				};
++				mt6351_vio28: ldo_vio28 {
++					regulator-name = "vio28";
++					regulator-always-on;
++				};
++				mt6351_vio18: ldo_vio18 {
++					regulator-name = "vio18";
++					regulator-always-on;
++				};
++				mt6351_vcn18: ldo_vcn18 {
++					regulator-name = "vcn18";
++					regulator-always-on;
++				};
++				mt6351_vxo22: ldo_vxo22 {
++					regulator-name = "vxo22";
++					regulator-always-on;
++				};
++				mt6351_va10: ldo_va10 {
++					regulator-name = "va10";
++					regulator-always-on;
++				};
++				mt6351_vmipi: ldo_vmipi {
++					regulator-name = "vmipi";
++					regulator-always-on;
++				};
++				mt6351_vgp3: ldo_vgp3 {
++					regulator-name = "vgp3";
++					regulator-always-on;
++				};
++				mt6351_vcn33_bt: ldo_vcn33_bt {
++					regulator-name = "vcn33_bt";
++					regulator-min-microvolt = <3300000>;
++					regulator-max-microvolt = <3300000>;
++				};
++
++				mt6351_vcn33_wifi: ldo_vcn33_wifi {
++					regulator-name = "vcn33_wifi";
++					regulator-always-on;
++				};
++				mt6351_vldo28: ldo_vldo28 {
++					regulator-name = "vldo28";
++					regulator-always-on;
++				};
++			};
++		};
++
++		/* Después de pmic: mtk-pmic-wrap toma el PRIMER hijo como el PMIC. */
++		/* RTC del MT6351 (rtc-mt6351): hora en UTC como la deja Android; alarma por mt6351-irq. */
++		/* Interrupciones del PMIC (mt6351-irq): GPIO 262 = EINT 176, nivel alto (DT de fábrica). */
++		pmic_irq: pmic-irq {
++			compatible = "mediatek,mt6351-irq";
++			interrupt-controller;
++			#interrupt-cells = <1>;
++			interrupts-extended = <&pio 176 IRQ_TYPE_LEVEL_HIGH>;
++		};
++
++		/* Tecla de encendido: interrupciones PWRKEY (pulsación) y PWRKEY_R (suelta) del PMIC. */
++		power-key {
++			compatible = "mediatek,mt6351-pwrkey";
++			interrupts-extended = <&pmic_irq 0>, <&pmic_irq 2>;
++			interrupt-names = "press", "release";
++			wakeup-source;
++		};
++
++		rtc {
++			compatible = "mediatek,mt6351-rtc";
++			interrupts-extended = <&pmic_irq 9>;	/* RG_INT_STATUS_RTC */
++			system-power-controller;
++		};
++
++		/* Tensión/temperatura/capacidad estimada de la batería por el AUXADC del MT6351 (mt6351-battery). */
++		battery-meter {
++			compatible = "mediatek,mt6351-battery";
++			mediatek,u2phy = <&u2port0>;
++		};
++	};
++};
++
++/* lk busca un nodo con compatible «mediatek,scp» (platform_fdt_scp) y sin él NO arranca el kernel
++ * (comprobado 2026-10-20 con swap-dt.py). Copia del nodo del DT de fábrica, desactivado. */
++/ {
++	scp@10020000 {
++		compatible = "mediatek,scp";
++		reg = <0 0x10020000 0 0x80000>, <0 0x100a0000 0 0x1000>, <0 0x100a4000 0 0x1000>;
++		interrupts = <GIC_SPI 199 IRQ_TYPE_LEVEL_HIGH>;
++		status = "disabled";
++	};
++};
++
++/* El firmware de la E-PAD no programa CNTFRQ_EL0: el DT de fábrica fija la frecuencia del temporizador
++ * ARM a 13 MHz (clock-frequency = <0xc65d40>). Sin ella el kernel moderno no tiene reloj. */
++&{/timer} {
++	clock-frequency = <13000000>;
++};
++
++&pio {
++	/* Controlador EINT (en el DT de fábrica: eintc@1000b000, GIC SPI 170). Mainline no lo declaraba. */
++	reg = <0 0x10005000 0 0x1000>, <0 0x10002000 0 0x400>, <0 0x10002400 0 0x400>,
++	      <0 0x10002800 0 0x400>, <0 0x10002C00 0 0x400>, <0 0x1000b000 0 0x1000>;
++	reg-names = "gpio", "iocfgl", "iocfgb", "iocfgr", "iocfgt", "eint";
++	interrupt-controller;
++	#interrupt-cells = <2>;
++	interrupts = <GIC_SPI 170 IRQ_TYPE_LEVEL_HIGH>;
++
++	/* GPIO 236 = HRDY del T1000 (1 = libre). Necesita el buffer de entrada activo: con IES = 0
++	 * se lee siempre 0 (así lo dejaba el kernel 3.18 de Linaro). */
++	/* IRQ del táctil (GPIO85 = EINT8) y del lápiz (GPIO86 = EINT9): modo EINT con pull-up, como en Android. */
++	epad_touch_pins: epad-touch {
++		irq {
++			pinmux = <MT6797_GPIO85__FUNC_EINT8>;
++			input-enable;
++			bias-pull-up;
++		};
++	};
++
++	epad_pen_pins: epad-pen {
++		irq {
++			pinmux = <MT6797_GPIO86__FUNC_EINT9>;
++			input-enable;
++			bias-pull-up;
++		};
++	};
++
++	/* eMMC (MSDC0): GPIO114-121 datos, 122 CMD, 123 CLK, 124 DSL, 125 RSTB, función 1 */
++	epad_frontlight_pins: epad-frontlight {
++		pins-pwm {
++			pinmux = <MT6797_GPIO91__FUNC_PWM_A>,	/* luz fría */
++				 <MT6797_GPIO49__FUNC_PWM_C>;	/* luz cálida */
++		};
++	};
++
++	mmc0_pins_default: mmc0-default {
++		cmd-dat {
++			pinmux = <MT6797_GPIO114__FUNC_MSDC0_DAT0>, <MT6797_GPIO115__FUNC_MSDC0_DAT1>,
++				 <MT6797_GPIO116__FUNC_MSDC0_DAT2>, <MT6797_GPIO117__FUNC_MSDC0_DAT3>,
++				 <MT6797_GPIO118__FUNC_MSDC0_DAT4>, <MT6797_GPIO119__FUNC_MSDC0_DAT5>,
++				 <MT6797_GPIO120__FUNC_MSDC0_DAT6>, <MT6797_GPIO121__FUNC_MSDC0_DAT7>,
++				 <MT6797_GPIO122__FUNC_MSDC0_CMD>;
++			input-enable;
++			bias-pull-up;
++		};
++		clk {
++			pinmux = <MT6797_GPIO123__FUNC_MSDC0_CLK>;
++			bias-pull-down;
++		};
++		ds-rst {
++			pinmux = <MT6797_GPIO124__FUNC_MSDC0_DSL>, <MT6797_GPIO125__FUNC_MSDC0_RSTB>;
++			bias-pull-up;
++		};
++	};
++
++	epad_t1000_pins: epad-t1000 {
++		hrdy {
++			pinmux = <MT6797_GPIO236__FUNC_GPIO236>;
++			input-enable;
++			input-schmitt-enable;
++			bias-disable;
++		};
++	};
++};
++
++/*
++ * Cargador TI bq24296 en i2c0 (0x6b, «sw_charger» de fábrica). Sin línea INT: el driver bq24190 sondea
++ * (parche 0015). Valores de fábrica (bat_meter del DT y registros leídos en Android): batería de alta tensión
++ * 4,352 V, 2 A con cargador de red (aquí 1984 mA, el paso inferior), terminación 128 mA, precarga 512 mA,
++ * SYS_MIN 3,5 V. La carga se puede limitar en caliente desde sysfs (tensión de carga, ICHG, IINLIM).
++ */
++&i2c0 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&i2c0_pins_a>;
++	clock-frequency = <100000>;
++	status = "okay";
++
++	charger@6b {
++		compatible = "ti,bq24296";
++		reg = <0x6b>;
++		monitored-battery = <&battery>;
++		ti,system-minimum-microvolt = <3500000>;
++	};
++};
++
++/* Controlador E-Ink T1000: driver eink-t1000 (/dev/t1000 compatible con el de fábrica + sysfs). */
++&i2c1 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&i2c1_pins_a>, <&epad_t1000_pins>;
++	status = "okay";
++
++	eink@6 {
++		compatible = "eink,t1000";
++		reg = <0x06>;
++		hrdy-gpios = <&pio 236 GPIO_ACTIVE_HIGH>;
++		mediatek,dsi-base = <0x1401c000>;	/* DSI0: vídeo solo al actualizar */
++		mediatek,ovl-base = <0x1400b000>;	/* OVL0: quitar la capa del aviso de lk */
++	};
++};
++
++/* Lápiz: I2C-HID en i2c2 (i2c@11013000) 0x09, descriptor en 0x0001, IRQ = GPIO86 (EINT9) nivel bajo,
++ * reset = GPIO41 (activo bajo). */
++&i2c2 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&i2c2_pins_a>, <&epad_pen_pins>;
++	clock-frequency = <400000>;
++	status = "okay";
++
++	stylus@9 {
++		compatible = "hid-over-i2c";
++		reg = <0x09>;
++		hid-descr-addr = <0x0001>;
++		interrupts-extended = <&pio 9 IRQ_TYPE_LEVEL_LOW>;	/* número de EINT (GPIO86 = EINT9) */
++		reset-gpios = <&pio 41 GPIO_ACTIVE_LOW>;
++		vdd-supply = <&pen_3v3>;
++		vddl-supply = <&pen_1v8>;
++		post-power-on-delay-ms = <1000>;	/* con 100 ms no responde (como en el 3.18) */
++		post-reset-deassert-delay-ms = <100>;
++	};
++};
++
++/* Acelerómetro (sensor de orientación): MiraMEMS MSA300 en i2c3 0x26 (cust_accel de fábrica, direction = 6).
++ * Mismo mapa de registros e ID (0x13) que el MSA311 de mainline. NO RESPONDE (ni en Android: el driver msa
++ * de fábrica no se enlaza y el bus 3 no da ACK en ninguna dirección) -> probablemente sin montar. */
++&i2c3 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&i2c3_pins_a>;
++	clock-frequency = <400000>;
++	status = "disabled";
++
++	accelerometer@26 {
++		compatible = "memsensing,msa311";
++		reg = <0x26>;
++	};
++};
++
++/* Táctil capacitivo: cyttsp5 en i2c4 (i2c@11011000) 0x24, IRQ = GPIO85 flanco de bajada, reset = GPIO68.
++ * (Su alimentación vtouch viene del PMIC; sin driver de PMIC aún, se confía en que lk la deja encendida.) */
++&i2c4 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&i2c4_pins_a>, <&epad_touch_pins>;
++	clock-frequency = <400000>;
++	status = "okay";
++
++	touchscreen@24 {
++		compatible = "cypress,tt21000";
++		reg = <0x24>;
++		interrupts-extended = <&pio 8 IRQ_TYPE_LEVEL_LOW>;	/* número de EINT (GPIO85 = EINT8) */
++		reset-gpios = <&pio 68 GPIO_ACTIVE_LOW>;
++		vdd-supply = <&mt6351_vldo28>;
++		vddio-supply = <&mt6351_vio18>;
++		touchscreen-size-x = <1872>;	/* tpd-resolution del DT de fábrica */
++		touchscreen-size-y = <1404>;
++		/* Y del panel invertido respecto a la imagen (prueba con el usuario, 2026-10-21); X correcto. */
++		touchscreen-inverted-y;
++	};
++};
++
++/* USB: SSUSB del MT6797, misma disposición que el MT8173 (kernel 3.18: SSUSB_DEV_BASE = 0x11270000 + 0x1000,
++ * IPPC = 0x11280000 + 0x700, PHY en 0x11290000 con U2 en +0x800 y U3 en +0x900). De momento solo dispositivo
++ * (gadget) y solo USB 2.0. */
++/ {
++	u3phy: t-phy@11290000 {
++		compatible = "mediatek,mt6797-u3phy";
++		reg = <0 0x11290000 0 0x800>;
++		#address-cells = <2>;
++		#size-cells = <2>;
++		ranges;
++
++		u2port0: usb-phy@11290800 {
++			/* 0x400: incluye U3 PHYA (0xb00), donde está VUSB10_ON */
++			reg = <0 0x11290800 0 0x400>;
++			clocks = <&clk26m>;
++			clock-names = "ref";
++			#phy-cells = <1>;
++		};
++	};
++
++	ssusb: usb@11271000 {
++		compatible = "mediatek,mt6797-mtu3", "mediatek,mtu3";
++		reg = <0 0x11271000 0 0x3000>, <0 0x11280700 0 0x0100>;
++		reg-names = "mac", "ippc";
++		interrupts = <GIC_SPI 127 IRQ_TYPE_LEVEL_LOW>;
++		phys = <&u2port0 PHY_TYPE_USB2>;
++		clocks = <&infrasys CLK_INFRA_SSUSB_SYS>, <&infrasys CLK_INFRA_SSUSB_REF>,
++			 <&infrasys CLK_INFRA_SSUSB_BUS>;
++		clock-names = "sys_ck", "ref_ck", "mcu_ck";
++		vusb33-supply = <&mt6351_vusb33>;
++		dr_mode = "peripheral";
++		maximum-speed = "high-speed";
++	};
++};
++
++/* eMMC. Primera versión conservadora: 8 bits, 50 MHz, sin HS200/HS400 (el DT de fábrica los declara). */
++/ {
++	/* Luz frontal (driver wisky_hot_leds de fábrica): fría = PWM1 (PWM_A, GPIO91), cálida = PWM3 (PWM_C,
++	 * GPIO49); ciclo de 1024 pasos, valores 1-1023. */
++	pwm: pwm@11006000 {
++		compatible = "mediatek,mt6797-pwm";
++		reg = <0 0x11006000 0 0x1000>;
++		#pwm-cells = <2>;
++		interrupts = <GIC_SPI 77 IRQ_TYPE_LEVEL_LOW>;
++		clocks = <&topckgen CLK_TOP_MUX_PWM>, <&infrasys CLK_INFRA_PWM>,
++			 <&infrasys CLK_INFRA_PWM1>, <&infrasys CLK_INFRA_PWM2>,
++			 <&infrasys CLK_INFRA_PWM3>, <&infrasys CLK_INFRA_PWM4>;
++		clock-names = "top", "main", "pwm1", "pwm2", "pwm3", "pwm4";
++		pinctrl-names = "default";
++		pinctrl-0 = <&epad_frontlight_pins>;
++	};
++
++	frontlight {
++		compatible = "pwm-leds";
++
++		led-cold {
++			label = "frontlight-cold";
++			pwms = <&pwm 0 40000>;
++			max-brightness = <1023>;
++		};
++
++		led-warm {
++			label = "frontlight-warm";
++			pwms = <&pwm 2 40000>;
++			max-brightness = <1023>;
++		};
++	};
++
++	/*
++	 * CONNSYS (WiFi/BT/GPS, MT6797 + MT6631): drivers del port de nickfox-taterli a 6.18 (BSP gen3 +
++	 * ConSys/BTIF/STP/WMT propios). Nodos tomados de su mt6797.dtsi y mt6797-x20-96-wireless-stp.dts.
++	 */
++	consys: consys@18070000 {
++		compatible = "mediatek,mt6797-consys";
++		reg = <0 0x18070000 0 0x200>,	/* CONN_MCU_CONFIG */
++		      <0 0x10007000 0 0x100>,	/* AP_RGU (TOPRGU) */
++		      <0 0x10000000 0 0x2000>,	/* TOPCKGEN */
++		      <0 0x10006000 0 0x1000>;	/* SPM */
++		vcn18-supply = <&mt6351_vcn18>;
++		vcn28-supply = <&mt6351_vcn28>;
++		vcn33-bt-supply = <&mt6351_vcn33_bt>;
++		vcn33-wifi-supply = <&mt6351_vcn33_wifi>;
++		memory-region = <&consys_emi>;
++	};
++
++	btif: btif@1100c000 {
++		compatible = "mediatek,mt6797-btif";
++		reg = <0 0x1100c000 0 0x1000>,
++		      <0 0x11000a00 0 0x80>,
++		      <0 0x11000a80 0 0x80>;
++		reg-names = "btif", "tx-dma", "rx-dma";
++		interrupts = <GIC_SPI 130 IRQ_TYPE_LEVEL_LOW>,
++			     <GIC_SPI 116 IRQ_TYPE_LEVEL_LOW>,
++			     <GIC_SPI 117 IRQ_TYPE_LEVEL_LOW>;
++		clocks = <&infrasys CLK_INFRA_BTIF>, <&infrasys CLK_INFRA_AP_DMA>;
++		clock-names = "btif", "dma";
++		mediatek,use-dma;
++	};
++
++	wifi_hif: wifi@180f0000 {
++		compatible = "mediatek,mt6797-wlan-hif";
++		reg = <0 0x180f0000 0 0x1100>,
++		      <0 0x11000080 0 0x80>;
++		reg-names = "hif", "dma";
++		interrupts = <GIC_SPI 283 IRQ_TYPE_LEVEL_LOW>;
++		clocks = <&infrasys CLK_INFRA_AP_DMA>;
++		clock-names = "wifi-dma";
++		mediatek,use-dma;
++	};
++
++	mmc@11230000 {
++		compatible = "mediatek,mt6797-mmc";
++		reg = <0 0x11230000 0 0x1000>;
++		interrupts = <GIC_SPI 79 IRQ_TYPE_LEVEL_LOW>;
++		clocks = <&topckgen CLK_TOP_MUX_MSDC50_0>, <&topckgen CLK_TOP_MUX_MSDC50_0_HCLK>,
++			 <&infrasys CLK_INFRA_MSDC0>;
++		clock-names = "source", "hclk", "sys_cg";
++		pinctrl-names = "default", "state_uhs";
++		pinctrl-0 = <&mmc0_pins_default>;
++		pinctrl-1 = <&mmc0_pins_default>;
++		bus-width = <8>;
++		max-frequency = <200000000>;
++		cap-mmc-highspeed;
++		mmc-hs200-1_8v;
++		mmc-hs400-1_8v;
++		hs400-ds-delay = <0x1401d>;
++		non-removable;
++		no-sd;
++		no-sdio;
++		vmmc-supply = <&mt6351_vemc>;
++		vqmmc-supply = <&mt6351_vio18>;
++	};
++};
++
++/* DVFS de CPU (mt6797-cpufreq). El DA9214 (i2c6 0x68; buck A = LL/L/CCI, buck B = big) lo maneja el propio driver
++ * por registros de i2c6 en modo FIFO, alta velocidad push-pull, como el kernel de fábrica y el parche SMP 0014:
++ * con i2c-mt65xx (siempre DMA) las lecturas de ese bus salen a cero o con error (ml-dvfs-1..5). i2c6 queda
++ * deshabilitado para que nadie más lo use. */
++/ {
++	cpufreq {
++		compatible = "mediatek,mt6797-cpufreq";
++		reg = <0 0x1001a000 0 0x1000>, <0 0x10000000 0 0x1000>, <0 0x10001000 0 0x1000>,
++		      <0 0x11015000 0 0x1000>, <0 0x1100e000 0 0x1000>;
++		reg-names = "mcumixed", "topckgen", "infracfg", "semaphore", "i2c6";
++		clocks = <&infrasys CLK_INFRA_I2C_APPM>;
++		clock-names = "i2c6";
++		/* Tensiones que calculó el EEM de fábrica en ESTE chip (Android, 50-60 °C, /proc/eem/EEM_DET_x/eem_status;
++		 * backup/logs/cpufreq/android-eem.txt), por OPP en el orden de las tablas del driver. */
++		mediatek,eem-microvolt-ll = <1190000 1170000 1150000 1120000 1100000 1080000 1050000 1010000
++					      970000 930000 890000 850000 820000 800000 790000 770000>;
++		mediatek,eem-microvolt-l = <1190000 1160000 1140000 1120000 1100000 1080000 1050000 1010000
++					      960000 910000 870000 830000 790000 790000 790000 770000>;
++		mediatek,eem-microvolt-cci = <1150000 1140000 1110000 1100000 1090000 1060000 1050000 1010000
++					      970000 930000 880000 850000 820000 800000 790000 770000>;
++		mediatek,eem-microvolt-b = <1170000 1140000 1110000 1090000 1080000 1060000 1040000 990000
++					      940000 900000 870000 830000 800000 800000 800000 800000>;
++	};
++};
++
++/* Térmico: controlador como el del MT8173 (auxadc_thermal + parche 0018), calibración en la efuse (0x10206180,
++ * 12 bytes, mismos campos v1). Disparos del kernel de fábrica (tzcpu_initcfg.h): reinicio a 117 °C, límites de
++ * CPU a 95/85 °C y gestión adaptativa desde 65 °C; aquí step_wise: big desde 70 °C, todos desde 85 °C. */
++/ {
++	efuse: efuse@10206000 {
++		compatible = "mediatek,mt6797-efuse", "mediatek,efuse";
++		reg = <0 0x10206000 0 0x1000>;
++		#address-cells = <1>;
++		#size-cells = <1>;
++
++		thermal_calibration: calib@180 {
++			reg = <0x180 0xc>;
++		};
++	};
++
++	auxadc: adc@11001000 {
++		compatible = "mediatek,mt6797-auxadc", "mediatek,mt8173-auxadc";
++		reg = <0 0x11001000 0 0x1000>;
++		clocks = <&infrasys CLK_INFRA_AUXADC>;
++		clock-names = "main";
++		#io-channel-cells = <1>;
++	};
++
++	thermal: thermal@1100b000 {
++		#thermal-sensor-cells = <0>;
++		compatible = "mediatek,mt6797-thermal";
++		reg = <0 0x1100b000 0 0x1000>;
++		interrupts = <GIC_SPI 78 IRQ_TYPE_LEVEL_LOW>;
++		clocks = <&infrasys CLK_INFRA_THERM>, <&infrasys CLK_INFRA_AUXADC>;
++		clock-names = "therm", "auxadc";
++		mediatek,auxadc = <&auxadc>;
++		mediatek,apmixedsys = <&apmixedsys>;
++		nvmem-cells = <&thermal_calibration>;
++		nvmem-cell-names = "calibration-data";
++	};
++
++	thermal-zones {
++		cpu-thermal {
++			polling-delay-passive = <250>;
++			polling-delay = <1000>;
++			thermal-sensors = <&thermal>;
++
++			trips {
++				cpu_alert: cpu-alert {
++					temperature = <70000>;
++					hysteresis = <3000>;
++					type = "passive";
++				};
++
++				cpu_hot: cpu-hot {
++					temperature = <85000>;
++					hysteresis = <3000>;
++					type = "passive";
++				};
++
++				cpu-crit {
++					temperature = <117000>;
++					hysteresis = <2000>;
++					type = "critical";
++				};
++			};
++
++			cooling-maps {
++				map-big {
++					trip = <&cpu_alert>;
++					cooling-device = <&cpu8 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
++				};
++
++				map-all {
++					trip = <&cpu_hot>;
++					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
++							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
++							 <&cpu8 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
++				};
++			};
++		};
++	};
++};
++
++&cpu0 { #cooling-cells = <2>; };
++&cpu1 { #cooling-cells = <2>; };
++&cpu2 { #cooling-cells = <2>; };
++&cpu3 { #cooling-cells = <2>; };
++&cpu4 { #cooling-cells = <2>; };
++&cpu5 { #cooling-cells = <2>; };
++&cpu6 { #cooling-cells = <2>; };
++&cpu7 { #cooling-cells = <2>; };
++&cpu8 { #cooling-cells = <2>; };
++&cpu9 { #cooling-cells = <2>; };
++
++
++/* Relojes que el BSP enciende antes de apagar audio y MJC (pre_clk en clk-mt6797-pg.c); sin ellos scpsys no
++ * puede apagarlos («Failed to power off domain») y se quedan encendidos. */
++&scpsys {
++	clocks = <&topckgen CLK_TOP_MUX_MFG>,
++		 <&topckgen CLK_TOP_MUX_MM>,
++		 <&topckgen CLK_TOP_MUX_VDEC>,
++		 <&infrasys CLK_INFRA_AUDIO_26M>,
++		 <&topckgen CLK_TOP_MUX_MJC>;
++	clock-names = "mfg", "mm", "vdec", "audio", "mjc";
++};
++
++/* SPM: suspensión a RAM con el firmware PCM de fábrica (mt6797-spm, parche 0019). */
++/ {
++	spm@10006000 {
++		compatible = "mediatek,mt6797-spm";
++		reg = <0 0x10006000 0 0x1000>, <0 0x1000d000 0 0x1000>, <0 0x10200000 0 0x3000>,
++		      <0 0x10007000 0 0x100>, <0 0x1000f000 0 0x1000>;	/* ... TOPRGU, DDRPHY */
++		interrupts = <GIC_SPI 180 IRQ_TYPE_LEVEL_LOW>;
++		memory-region = <&spm_pcm>;
++		mediatek,pwrap = <&pwrap>;
++	};
++};

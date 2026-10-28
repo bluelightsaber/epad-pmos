@@ -1,0 +1,901 @@
+From 60ad73cf54a6e026ffad73646e33025773fb66f9 Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 00:20:03 +0200
+Subject: [PATCH 12/20] cpufreq: add MT6797 driver (3 clusters + CCI, DA9214,
+ EEM)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/cpufreq/Kconfig.arm      |   7 +
+ drivers/cpufreq/Makefile         |   1 +
+ drivers/cpufreq/mt6797-cpufreq.c | 851 +++++++++++++++++++++++++++++++
+ 3 files changed, 859 insertions(+)
+ create mode 100644 drivers/cpufreq/mt6797-cpufreq.c
+
+diff --git a/drivers/cpufreq/Kconfig.arm b/drivers/cpufreq/Kconfig.arm
+index a441668f9..b8686de70 100644
+--- a/drivers/cpufreq/Kconfig.arm
++++ b/drivers/cpufreq/Kconfig.arm
+@@ -121,6 +121,13 @@ config ARM_KIRKWOOD_CPUFREQ
+ 	  This adds the CPUFreq driver for Marvell Kirkwood
+ 	  SoCs.
+ 
++config ARM_MT6797_CPUFREQ
++	bool "MT6797 CPU DVFS (E-PAD)"
++	depends on ARCH_MEDIATEK && HAVE_ARM_SMCCC
++	help
++	  CPU frequency and voltage scaling for the MT6797 (Helio X20/X25) with
++	  the ARM PLLs driven directly and the big cluster through the ATF SMCs.
++
+ config ARM_MEDIATEK_CPUFREQ
+ 	tristate "CPU Frequency scaling support for MediaTek SoCs"
+ 	depends on ARCH_MEDIATEK || COMPILE_TEST
+diff --git a/drivers/cpufreq/Makefile b/drivers/cpufreq/Makefile
+index 6c7a39b7f..30ee6853a 100644
+--- a/drivers/cpufreq/Makefile
++++ b/drivers/cpufreq/Makefile
+@@ -65,6 +65,7 @@ obj-$(CONFIG_ARM_IMX6Q_CPUFREQ)		+= imx6q-cpufreq.o
+ obj-$(CONFIG_ARM_IMX_CPUFREQ_DT)	+= imx-cpufreq-dt.o
+ obj-$(CONFIG_ARM_KIRKWOOD_CPUFREQ)	+= kirkwood-cpufreq.o
+ obj-$(CONFIG_ARM_MEDIATEK_CPUFREQ)	+= mediatek-cpufreq.o
++obj-$(CONFIG_ARM_MT6797_CPUFREQ)	+= mt6797-cpufreq.o
+ obj-$(CONFIG_ARM_MEDIATEK_CPUFREQ_HW)	+= mediatek-cpufreq-hw.o
+ obj-$(CONFIG_MACH_MVEBU_V7)		+= mvebu-cpufreq.o
+ obj-$(CONFIG_ARM_PXA2xx_CPUFREQ)	+= pxa2xx-cpufreq.o
+diff --git a/drivers/cpufreq/mt6797-cpufreq.c b/drivers/cpufreq/mt6797-cpufreq.c
+new file mode 100644
+index 000000000..0371b2a4e
+--- /dev/null
++++ b/drivers/cpufreq/mt6797-cpufreq.c
+@@ -0,0 +1,851 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * DVFS de CPU del MT6797 en la E-PAD (bin SB, segmento TT, date code 0119).
++ *
++ * Basado en drivers/cpufreq/mt6797-cpufreq.c de nickfox-taterli (6.18, tablas FY de la X20) y en mt_cpufreq.c
++ * del kernel 3.18 de fábrica. Respecto al de taterli:
++ *  - tablas SB/TT del BSP dentro del driver (la E-PAD no es FY);
++ *  - el CCI (ARMPLL2) va en el mismo buck A que LL y L: se mueve con ellos (índice = el del clúster más rápido),
++ *    como _calc_new_cci_opp_idx() del BSP; si no, bajar el buck A lo dejaría sin tensión;
++ *  - VSRAM: el BSP exige vproc <= vsram <= vproc + 0,3 V; vsram = vproc + 0,1 V acotado a 1,0..1,2 V, en
++ *    escalones (set_cur_volt_extbuck). LL/L/CCI: LDOs de SRAM de INFRACFG (CPULDO_CTRL); big: LDO por SMC;
++ *  - el DA9214 (buck A y B) se habla directamente por los registros de i2c6 en modo FIFO, como el parche SMP
++ *    0014: con i2c-mt65xx (DMA) las lecturas de ese bus devuelven ceros o errores;
++ *  - EEM: sin portar el detector; con «mediatek,eem-microvolt-*» en el DT (tablas que calculó el EEM de fábrica
++ *    en este chip en caliente) y la CPU por encima de 40 °C se usan esas tensiones + eem_margin_uv (nunca por
++ *    encima de la nominal); por debajo de 36 °C, la nominal. El EEM de fábrica hace lo mismo con su tabla
++ *    (+62,5 mV por debajo de 33 °C);
++ *  - big: frecuencia por SMC (BigiDVFSPllSetFreq) y POSDIV escribiendo ARMPLL_CON0 por la SMC de escritura
++ *    (BigiDVFSPOSDIVSet); con vproc < 1,0 V se sube a 1,0 V mientras la PLL cambia (adjust_armpll_dds).
++ */
++
++#include <linux/arm-smccc.h>
++#include <linux/bitfield.h>
++#include <linux/clk.h>
++#include <linux/cpu.h>
++#include <linux/cpufreq.h>
++#include <linux/delay.h>
++#include <linux/devm-helpers.h>
++#include <linux/io.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/thermal.h>
++#include <linux/workqueue.h>
++
++#define MT6797_SIP_IDVFS_PLL_SET_FREQ	0xc20003b8
++#define MT6797_SIP_IDVFS_SRAM_LDO_SET	0xc20003bf
++#define MT6797_SIP_OCP_READ		0xc200035f
++#define MT6797_SIP_OCP_WRITE		0xc200035e
++
++#define ARMPLL_CON1(id)			(0x204 + (id) * 0x10)	/* LL 0x204, L 0x214, CCI 0x224 */
++#define ARMPLLDIV_MUXSEL		0x270
++#define ARMPLLDIV_CKDIV			0x274
++#define TOP_CLK_MISC_CFG_0		0x104
++
++#define CPULDO_CTRL_0			0xf98	/* INFRACFG_AO: activación de los 8 LDO de SRAM */
++#define CPULDO_CTRL_1			0xf9c
++#define CPULDO_CTRL_2			0xfa0
++
++#define SEMA_POWERON_CONFIG		0x000
++#define SEMA3_M0			0x440
++#define SEMA_PROJECT_CODE		0x0b16
++
++#define B_PLL_CON0			0x102224a0
++#define B_PLL_CON1			0x102224a4
++#define B_PLL_MIN_UV			1000000	/* vproc del big mientras su PLL cambia */
++
++#define MUX_ARMPLL			1
++#define MUX_MAINPLL			2
++
++#define VSRAM_MIN_UV			1000000
++#define VSRAM_MAX_UV			1200000
++#define VSRAM_OVER_VPROC_UV		100000
++#define VSRAM_MAX_DIFF_UV		300000
++#define VSRAM_STEP_UV			270000	/* margen bajo el máximo; múltiplo de los 10 mV del DA9214 */
++
++/* i2c6 (APPM) */
++#define I2C_DATA_PORT			0x000
++#define I2C_SLAVE_ADDR			0x004
++#define I2C_INTR_MASK			0x008
++#define I2C_INTR_STAT			0x00c
++#define I2C_CONTROL			0x010
++#define I2C_TRANSFER_LEN		0x014
++#define I2C_TRANSAC_LEN			0x018
++#define I2C_TIMING			0x020
++#define I2C_START			0x024
++#define I2C_FIFO_STAT			0x030
++#define I2C_FIFO_ADDR_CLR		0x038
++#define I2C_IO_CONFIG			0x040
++#define I2C_HS				0x048
++#define I2C_SOFTRESET			0x050
++#define I2C_TRANSAC_COMP		BIT(0)
++#define I2C_ACKERR			BIT(1)
++#define I2C_HS_NACKERR			BIT(2)
++#define I2C_CONTROL_RS			BIT(1)
++#define I2C_CONTROL_CLK_EXT_EN		BIT(3)
++#define I2C_CONTROL_DIR_CHANGE		BIT(4)
++#define I2C_CONTROL_ACKERR_DET_EN	BIT(5)
++
++#define DA9214_ADDR			0x68
++#define DA9214_PAGE_CON			0x00
++#define DA9214_VBUCK(buck)		(0xd7 + (buck) * 2)	/* VBUCKA_A / VBUCKB_A */
++#define DA9214_MIN_UV			300000
++#define DA9214_STEP_UV			10000
++
++#define VPROC_MIN_UV			770000
++#define VPROC_MAX_UV			1200000
++
++enum { LL, L, B, CCI, NR_DOMAINS };
++
++struct mt6797_opp {
++	unsigned int khz;
++	unsigned int uv;
++	u8 pos_div;
++	u8 clk_div;
++};
++
++#define OPP(_khz, _mv10, _pos, _clk) { (_khz), (_mv10) * 10, (_pos), (_clk) }
++
++/* VPROC1_SB: la misma tensión por índice para LL, L y CCI (comparten el buck A del DA9214). */
++static const struct mt6797_opp opp_ll[] = {
++	OPP(1547000, 120000, 1, 1), OPP(1495000, 119000, 1, 1), OPP(1443000, 117000, 1, 1),
++	OPP(1391000, 115000, 1, 1), OPP(1339000, 114000, 1, 1), OPP(1274000, 113000, 1, 1),
++	OPP(1222000, 110000, 1, 1), OPP(1118000, 107000, 1, 1), OPP(1014000, 104000, 2, 1),
++	OPP( 897000, 100000, 2, 1), OPP( 806000,  97000, 2, 1), OPP( 715000,  94000, 2, 1),
++	OPP( 624000,  90000, 2, 1), OPP( 481000,  85000, 2, 2), OPP( 338000,  80000, 2, 2),
++	OPP( 221000,  77000, 2, 4),
++};
++
++static const struct mt6797_opp opp_l[] = {
++	OPP(2002000, 120000, 1, 1), OPP(1950000, 119000, 1, 1), OPP(1885000, 117000, 1, 1),
++	OPP(1820000, 115000, 1, 1), OPP(1755000, 114000, 1, 1), OPP(1703000, 113000, 1, 1),
++	OPP(1625000, 110000, 1, 1), OPP(1495000, 107000, 1, 1), OPP(1352000, 104000, 1, 1),
++	OPP(1209000, 100000, 1, 1), OPP(1092000,  97000, 1, 1), OPP( 962000,  94000, 2, 1),
++	OPP( 832000,  90000, 2, 1), OPP( 650000,  85000, 2, 1), OPP( 468000,  80000, 2, 2),
++	OPP( 325000,  77000, 2, 2),
++};
++
++static const struct mt6797_opp opp_cci[] = {
++	OPP( 988000, 120000, 2, 1), OPP( 975000, 119000, 2, 1), OPP( 936000, 117000, 2, 1),
++	OPP( 910000, 115000, 2, 1), OPP( 884000, 114000, 2, 1), OPP( 845000, 113000, 2, 1),
++	OPP( 819000, 110000, 2, 1), OPP( 754000, 107000, 2, 1), OPP( 676000, 104000, 2, 1),
++	OPP( 611000, 100000, 2, 1), OPP( 533000,  97000, 2, 2), OPP( 481000,  94000, 2, 2),
++	OPP( 416000,  90000, 2, 2), OPP( 325000,  85000, 2, 2), OPP( 234000,  80000, 2, 4),
++	OPP( 169000,  77000, 2, 4),
++};
++
++/* VPROC2_SB0119 con el ajuste TT de _mt_cpufreq_init() y los métodos de opp_tbl_method_B_e5. */
++static const struct mt6797_opp opp_b[] = {
++	OPP(2587000, 120000, 1, 1), OPP(2431000, 118000, 1, 1), OPP(2327000, 116000, 1, 1),
++	OPP(2262000, 115000, 1, 1), OPP(2223000, 114000, 1, 1), OPP(2158000, 113000, 1, 1),
++	OPP(2093000, 111000, 1, 1), OPP(1885000, 108000, 1, 1), OPP(1677000, 104000, 1, 1),
++	OPP(1495000, 100000, 1, 1), OPP(1378000,  98000, 1, 1), OPP(1131000,  93000, 1, 1),
++	OPP(1001000,  90000, 2, 1), OPP( 845000,  88000, 2, 1), OPP( 676000,  85000, 2, 1),
++	OPP( 338000,  80000, 2, 2),
++};
++
++struct mt6797_domain {
++	const char *name;
++	const struct mt6797_opp *opp;
++	unsigned int nr_opp;
++	unsigned int first_cpu, nr_cpus;
++	unsigned int mux_shift, ckdiv_shift;
++	int idx;
++	u32 eem_uv[16];
++	bool has_eem;
++	struct cpufreq_frequency_table *table;
++};
++
++struct mt6797_cpufreq {
++	struct device *dev;
++	void __iomem *mcumixed;
++	void __iomem *topckgen;
++	void __iomem *infracfg;
++	void __iomem *semaphore;
++	void __iomem *i2c;
++	int vproc_uv[2];	/* buck A (LL/L/CCI), buck B (big) */
++	int vsram_uv[2];
++	struct mutex lock;
++	struct mt6797_domain dom[NR_DOMAINS];
++	struct thermal_zone_device *tz;
++	struct delayed_work eem_work;
++	bool eem_hot;
++};
++
++static struct mt6797_cpufreq *mt6797_data;
++
++/* Interruptor: con «mt6797_cpufreq.enable=0» en la línea de órdenes solo informa del estado. */
++static bool enable = true;
++module_param(enable, bool, 0444);
++
++static unsigned int eem_margin_uv = 20000;
++module_param(eem_margin_uv, uint, 0644);
++
++#define EEM_HOT_MC			40000
++#define EEM_COLD_MC			36000
++
++/* Transacción FIFO de i2c6 en alta velocidad push-pull (la del kernel de fábrica y del parche 0014). */
++static int mt6797_i2c6_xfer(void __iomem *base, const u8 *tx, u8 tx_len, u8 *rx, u8 rx_len)
++{
++	u16 ctrl = I2C_CONTROL_RS | I2C_CONTROL_CLK_EXT_EN | I2C_CONTROL_ACKERR_DET_EN;
++	u16 st;
++	int i;
++
++	if (rx_len)
++		ctrl |= I2C_CONTROL_DIR_CHANGE;
++	writew(ctrl, base + I2C_CONTROL);
++	writew(0x10, base + I2C_TIMING);
++	writew(0x0201, base + I2C_HS);
++	writew(0, base + I2C_IO_CONFIG);
++	writew(DA9214_ADDR << 1, base + I2C_SLAVE_ADDR);
++	writew(readw(base + I2C_INTR_MASK) & ~(I2C_HS_NACKERR | I2C_ACKERR | I2C_TRANSAC_COMP),
++	       base + I2C_INTR_MASK);
++	writew(I2C_HS_NACKERR | I2C_ACKERR | I2C_TRANSAC_COMP, base + I2C_INTR_STAT);
++	writew(1, base + I2C_FIFO_ADDR_CLR);
++	writew(tx_len | rx_len << 8, base + I2C_TRANSFER_LEN);
++	writew(rx_len ? 2 : 1, base + I2C_TRANSAC_LEN);
++	while (tx_len--)
++		writew(*tx++, base + I2C_DATA_PORT);
++	mb();
++	writew(1, base + I2C_START);
++
++	for (i = 0; i < 10000; i++) {
++		st = readw(base + I2C_INTR_STAT);
++		if (st & (I2C_HS_NACKERR | I2C_ACKERR))
++			break;
++		if (st & I2C_TRANSAC_COMP) {
++			if (rx_len && ((readw(base + I2C_FIFO_STAT) >> 4) & 0xf) < rx_len)
++				return -EIO;
++			while (rx_len--)
++				*rx++ = readw(base + I2C_DATA_PORT);
++			return 0;
++		}
++		udelay(1);
++	}
++	writew(1, base + I2C_SOFTRESET);
++	writew(I2C_HS_NACKERR | I2C_ACKERR | I2C_TRANSAC_COMP, base + I2C_INTR_STAT);
++	writew(1, base + I2C_FIFO_ADDR_CLR);
++	return i == 10000 ? -ETIMEDOUT : -EIO;
++}
++
++static int mt6797_da9214_read(struct mt6797_cpufreq *d, u8 reg, u8 *val)
++{
++	return mt6797_i2c6_xfer(d->i2c, &reg, 1, val, 1);
++}
++
++static int mt6797_da9214_write(struct mt6797_cpufreq *d, u8 reg, u8 val)
++{
++	u8 buf[2] = { reg, val };
++
++	return mt6797_i2c6_xfer(d->i2c, buf, 2, NULL, 0);
++}
++
++/* da9214_vosel_buck_a/b() del BSP; espera la rampa (10 mV/µs) más un margen. */
++static int mt6797_buck_set(struct mt6797_cpufreq *d, int buck, int uv)
++{
++	int ret;
++
++	if (uv < VPROC_MIN_UV || uv > VPROC_MAX_UV)
++		return -EINVAL;
++	ret = mt6797_da9214_write(d, DA9214_VBUCK(buck), DIV_ROUND_UP(uv - DA9214_MIN_UV, DA9214_STEP_UV));
++	if (ret)
++		return ret;
++	udelay(abs(uv - d->vproc_uv[buck]) / 10000 + 25);
++	d->vproc_uv[buck] = uv;
++	return 0;
++}
++
++static int mt6797_buck_get(struct mt6797_cpufreq *d, int buck)
++{
++	u8 v;
++	int ret = mt6797_da9214_read(d, DA9214_VBUCK(buck), &v);
++
++	return ret ?: DA9214_MIN_UV + (v & 0x7f) * DA9214_STEP_UV;
++}
++
++static void mt6797_mux(struct mt6797_cpufreq *d, struct mt6797_domain *dom, unsigned int sel)
++{
++	u32 v = readl(d->topckgen + TOP_CLK_MISC_CFG_0) & ~GENMASK(5, 4);
++
++	if (sel == MUX_MAINPLL)
++		v |= FIELD_PREP(GENMASK(5, 4), 3);
++	writel(v, d->topckgen + TOP_CLK_MISC_CFG_0);
++	v = readl(d->mcumixed + ARMPLLDIV_MUXSEL) & ~(3U << dom->mux_shift);
++	writel(v | sel << dom->mux_shift, d->mcumixed + ARMPLLDIV_MUXSEL);
++	readl(d->mcumixed + ARMPLLDIV_MUXSEL);
++}
++
++static unsigned int mt6797_ckdiv_sel(unsigned int clk_div)
++{
++	return clk_div == 4 ? 11 : clk_div == 2 ? 10 : 8;
++}
++
++static unsigned int mt6797_ckdiv_ratio(unsigned int sel)
++{
++	return sel == 11 ? 4 : sel == 10 ? 2 : 1;
++}
++
++static void mt6797_set_clkdiv(struct mt6797_cpufreq *d, struct mt6797_domain *dom, unsigned int clk_div)
++{
++	u32 sel = mt6797_ckdiv_sel(clk_div);
++	int i;
++
++	/* adjust_clkdiv() del BSP: a veces no entra a la primera */
++	for (i = 0; i < 2; i++) {
++		u32 v = readl(d->mcumixed + ARMPLLDIV_CKDIV) & ~(0x1fU << dom->ckdiv_shift);
++
++		writel(v | sel << dom->ckdiv_shift, d->mcumixed + ARMPLLDIV_CKDIV);
++		udelay(2);
++		if (((readl(d->mcumixed + ARMPLLDIV_CKDIV) >> dom->ckdiv_shift) & 0x1f) == sel)
++			break;
++	}
++}
++
++/* LL, L, CCI: DDS y POSDIV de ARMPLLx_CON1 con la CPU pasada a MAINPLL mientras tanto. */
++static void mt6797_set_armpll(struct mt6797_cpufreq *d, struct mt6797_domain *dom, const struct mt6797_opp *o)
++{
++	unsigned int id = dom - d->dom == CCI ? 2 : dom - d->dom;
++	unsigned int vco = o->khz * o->pos_div * o->clk_div;
++	u32 dds = ((vco / 1000) << 14) / 26;
++	u32 v;
++
++	mt6797_mux(d, dom, MUX_MAINPLL);
++	v = readl(d->mcumixed + ARMPLL_CON1(id)) & ~(GENMASK(26, 24) | GENMASK(20, 0));
++	v |= ilog2(o->pos_div) << 24 | (dds & GENMASK(20, 0));
++	writel(v | BIT(31), d->mcumixed + ARMPLL_CON1(id));
++	udelay(20);
++	mt6797_mux(d, dom, MUX_ARMPLL);
++}
++
++static u32 mt6797_ocp_read(u32 addr)
++{
++	struct arm_smccc_res res;
++
++	arm_smccc_smc(MT6797_SIP_OCP_READ, addr, 0, 0, 0, 0, 0, 0, &res);
++	return res.a0;
++}
++
++static void mt6797_ocp_write(u32 addr, u32 val)
++{
++	struct arm_smccc_res res;
++
++	arm_smccc_smc(MT6797_SIP_OCP_WRITE, addr, val, 0, 0, 0, 0, 0, &res);
++}
++
++/* adjust_posdiv() + BigiDVFSPOSDIVSet(): PLL apagada mientras cambia CON0[14:12], CPU en MAINPLL. */
++static void mt6797_set_big_posdiv(struct mt6797_cpufreq *d, struct mt6797_domain *dom, unsigned int pos_div)
++{
++	u32 v;
++
++	mt6797_mux(d, dom, MUX_MAINPLL);
++	v = mt6797_ocp_read(B_PLL_CON0) & ~BIT(0);
++	mt6797_ocp_write(B_PLL_CON0, v);
++	v = (v & ~GENMASK(14, 12)) | ilog2(pos_div) << 12;
++	mt6797_ocp_write(B_PLL_CON0, v);
++	mt6797_ocp_write(B_PLL_CON0, v | BIT(0));
++	udelay(20);
++	mt6797_mux(d, dom, MUX_ARMPLL);
++}
++
++static int mt6797_set_big_pll(struct mt6797_cpufreq *d, struct mt6797_domain *dom, const struct mt6797_opp *o)
++{
++	struct arm_smccc_res res;
++
++	mt6797_mux(d, dom, MUX_MAINPLL);
++	arm_smccc_smc(MT6797_SIP_IDVFS_PLL_SET_FREQ, o->khz * o->clk_div / 1000, 0, 0, 0, 0, 0, 0, &res);
++	udelay(20);
++	mt6797_mux(d, dom, MUX_ARMPLL);
++	return (long)res.a0 < 0 ? -EIO : 0;
++}
++
++static int mt6797_sema_get(struct mt6797_cpufreq *d)
++{
++	int i;
++
++	writel(SEMA_PROJECT_CODE << 16 | BIT(0), d->semaphore + SEMA_POWERON_CONFIG);
++	for (i = 0; i < 200; i++) {
++		writel(1, d->semaphore + SEMA3_M0);
++		if (readl(d->semaphore + SEMA3_M0) & BIT(0))
++			return 0;
++		udelay(10);
++	}
++	return -EBUSY;
++}
++
++static void mt6797_sema_put(struct mt6797_cpufreq *d)
++{
++	writel(SEMA_PROJECT_CODE << 16 | BIT(0), d->semaphore + SEMA_POWERON_CONFIG);
++	if (readl(d->semaphore + SEMA3_M0) & BIT(0))
++		writel(1, d->semaphore + SEMA3_M0);
++}
++
++/* Orden de set_cur_freq() del BSP: subir divisores antes de la PLL y bajarlos después. */
++static int mt6797_set_freq(struct mt6797_cpufreq *d, struct mt6797_domain *dom, int idx)
++{
++	const struct mt6797_opp *old = &dom->opp[dom->idx], *new = &dom->opp[idx];
++	bool big = dom == &d->dom[B];
++	int ret;
++
++	if (idx == dom->idx)
++		return 0;
++	ret = mt6797_sema_get(d);
++	if (ret)
++		return ret;
++	if (big && new->pos_div > old->pos_div)
++		mt6797_set_big_posdiv(d, dom, new->pos_div);
++	if (new->clk_div > old->clk_div)
++		mt6797_set_clkdiv(d, dom, new->clk_div);
++	if (big)
++		ret = mt6797_set_big_pll(d, dom, new);
++	else
++		mt6797_set_armpll(d, dom, new);
++	if (new->clk_div < old->clk_div)
++		mt6797_set_clkdiv(d, dom, new->clk_div);
++	if (big && new->pos_div < old->pos_div)
++		mt6797_set_big_posdiv(d, dom, new->pos_div);
++	mt6797_sema_put(d);
++	if (!ret)
++		dom->idx = idx;
++	return ret;
++}
++
++static int mt6797_set_vsram(struct mt6797_cpufreq *d, int buck, int uv)
++{
++	if (buck == 0) {
++		/* set_cur_volt_sram_l(): mismo código en los 8 LDO (4 bits por byte) */
++		u32 val = DIV_ROUND_UP(uv - 900000, 25000) + 3;
++
++		writel(readl(d->infracfg + CPULDO_CTRL_0) | 0xff, d->infracfg + CPULDO_CTRL_0);
++		writel(val * 0x01010101, d->infracfg + CPULDO_CTRL_1);
++		writel(val * 0x01010101, d->infracfg + CPULDO_CTRL_2);
++	} else {
++		struct arm_smccc_res res;
++
++		arm_smccc_smc(MT6797_SIP_IDVFS_SRAM_LDO_SET, uv / 10, 0, 0, 0, 0, 0, 0, &res);
++		if ((long)res.a0 < 0)
++			return -EIO;
++	}
++	d->vsram_uv[buck] = uv;
++	udelay(100);
++	return 0;
++}
++
++static int mt6797_vsram_for(int vproc)
++{
++	return clamp(vproc + VSRAM_OVER_VPROC_UV, VSRAM_MIN_UV, VSRAM_MAX_UV);
++}
++
++/* set_cur_volt_extbuck() del BSP: escalones que mantienen vproc <= vsram <= vproc + 0,3 V. */
++static int mt6797_set_vproc(struct mt6797_cpufreq *d, int buck, int target)
++{
++	int cur = d->vproc_uv[buck];
++	int ret = 0;
++
++	while (!ret && cur != target) {
++		int vsram, vproc;
++
++		if (target > cur) {
++			vsram = min(mt6797_vsram_for(target), cur + VSRAM_STEP_UV);
++			vsram = max(vsram, d->vsram_uv[buck]);
++			ret = mt6797_set_vsram(d, buck, vsram);
++			/* vproc 0,1 V por debajo de vsram, salvo con vsram ya en el máximo */
++			vproc = min(target, vsram == VSRAM_MAX_UV ? vsram : vsram - VSRAM_OVER_VPROC_UV);
++		} else {
++			vproc = max(target, d->vsram_uv[buck] - VSRAM_STEP_UV);
++		}
++		if (!ret)
++			ret = mt6797_buck_set(d, buck, vproc);
++		if (!ret && target < cur)
++			ret = mt6797_set_vsram(d, buck, mt6797_vsram_for(vproc));
++		cur = vproc;
++	}
++	return ret;
++}
++
++/* Tensión de un OPP: nominal, o la del EEM de fábrica + margen en caliente. */
++static int mt6797_opp_uv(struct mt6797_cpufreq *d, struct mt6797_domain *dom, int idx)
++{
++	int uv = dom->opp[idx].uv;
++
++	if (d->eem_hot && dom->has_eem && idx < ARRAY_SIZE(dom->eem_uv))
++		uv = min_t(int, uv, roundup(dom->eem_uv[idx] + eem_margin_uv, DA9214_STEP_UV));
++	return uv;
++}
++
++/* Buck A: lo que pida el más exigente de LL, L y CCI (cada uno con su tabla EEM). */
++static int mt6797_bucka_uv(struct mt6797_cpufreq *d, int ll, int l, int cci)
++{
++	return max3(mt6797_opp_uv(d, &d->dom[LL], ll), mt6797_opp_uv(d, &d->dom[L], l),
++		    mt6797_opp_uv(d, &d->dom[CCI], cci));
++}
++
++static int mt6797_set_big(struct mt6797_cpufreq *d, int idx)
++{
++	struct mt6797_domain *dom = &d->dom[B];
++	int uv = mt6797_opp_uv(d, dom, idx);
++	int ret = 0;
++
++	/* la PLL del big cambia con vproc2 >= 1,0 V */
++	if (idx != dom->idx && max(uv, B_PLL_MIN_UV) > d->vproc_uv[1])
++		ret = mt6797_set_vproc(d, 1, max(uv, B_PLL_MIN_UV));
++	else if (uv > d->vproc_uv[1])
++		ret = mt6797_set_vproc(d, 1, uv);
++	if (!ret)
++		ret = mt6797_set_freq(d, dom, idx);
++	if (!ret && uv < d->vproc_uv[1])
++		ret = mt6797_set_vproc(d, 1, uv);
++	return ret;
++}
++
++static int mt6797_set_little(struct mt6797_cpufreq *d, struct mt6797_domain *dom, int idx)
++{
++	int ll = dom == &d->dom[LL] ? idx : d->dom[LL].idx;
++	int l = dom == &d->dom[L] ? idx : d->dom[L].idx;
++	int cci = min(ll, l);
++	int uv = mt6797_bucka_uv(d, ll, l, cci);
++	bool up = uv > d->vproc_uv[0];
++	int ret;
++
++	ret = up ? mt6797_set_vproc(d, 0, uv) : 0;
++	if (!ret && cci < d->dom[CCI].idx)
++		ret = mt6797_set_freq(d, &d->dom[CCI], cci);
++	if (!ret)
++		ret = mt6797_set_freq(d, dom, idx);
++	if (!ret && cci > d->dom[CCI].idx)
++		ret = mt6797_set_freq(d, &d->dom[CCI], cci);
++	if (!ret && uv < d->vproc_uv[0])
++		ret = mt6797_set_vproc(d, 0, uv);
++	return ret;
++}
++
++static int mt6797_target_index(struct cpufreq_policy *policy, unsigned int idx)
++{
++	struct mt6797_domain *dom = policy->driver_data;
++	struct mt6797_cpufreq *d = mt6797_data;
++	int ret;
++
++	mutex_lock(&d->lock);
++	ret = dom == &d->dom[B] ? mt6797_set_big(d, idx) : mt6797_set_little(d, dom, idx);
++	mutex_unlock(&d->lock);
++	if (ret)
++		dev_err(d->dev, "%s: OPP %u falla: %d\n", dom->name, idx, ret);
++	return ret;
++}
++
++/* Cada segundo: temperatura de la CPU y, si cruza los umbrales, reaplicar las tensiones de los OPP actuales. */
++static void mt6797_eem_work(struct work_struct *work)
++{
++	struct mt6797_cpufreq *d = container_of(work, struct mt6797_cpufreq, eem_work.work);
++	bool hot = d->eem_hot;
++	int temp, ret = 0;
++
++	if (!d->tz) {
++		d->tz = thermal_zone_get_zone_by_name("cpu-thermal");
++		if (IS_ERR(d->tz))
++			d->tz = NULL;
++	}
++	if (!d->tz || thermal_zone_get_temp(d->tz, &temp))
++		hot = false;
++	else if (temp >= EEM_HOT_MC)
++		hot = true;
++	else if (temp < EEM_COLD_MC)
++		hot = false;
++
++	if (hot != d->eem_hot) {
++		mutex_lock(&d->lock);
++		d->eem_hot = hot;
++		ret = mt6797_set_vproc(d, 0, mt6797_bucka_uv(d, d->dom[LL].idx, d->dom[L].idx, d->dom[CCI].idx));
++		if (!ret)
++			ret = mt6797_set_vproc(d, 1, mt6797_opp_uv(d, &d->dom[B], d->dom[B].idx));
++		mutex_unlock(&d->lock);
++		if (ret)
++			dev_err(d->dev, "EEM: cambio de tensión falla: %d\n", ret);
++	}
++	schedule_delayed_work(&d->eem_work, HZ);
++}
++
++static unsigned int mt6797_read_khz(struct mt6797_cpufreq *d, struct mt6797_domain *dom)
++{
++	u32 sel = (readl(d->mcumixed + ARMPLLDIV_CKDIV) >> dom->ckdiv_shift) & 0x1f;
++	u64 khz;
++
++	if (dom == &d->dom[B]) {
++		struct arm_smccc_res r0, r1;
++
++		arm_smccc_smc(MT6797_SIP_OCP_READ, B_PLL_CON0, 0, 0, 0, 0, 0, 0, &r0);
++		arm_smccc_smc(MT6797_SIP_OCP_READ, B_PLL_CON1, 0, 0, 0, 0, 0, 0, &r1);
++		khz = ((u64)(r1.a0 & 0x7fffffff) * 26000) >> 24;
++		khz >>= (r0.a0 >> 12) & 7;
++	} else {
++		unsigned int id = dom == &d->dom[CCI] ? 2 : dom - d->dom;
++		u32 con1 = readl(d->mcumixed + ARMPLL_CON1(id));
++
++		khz = ((u64)(con1 & GENMASK(20, 0)) * 26000) >> 14;
++		khz >>= FIELD_GET(GENMASK(26, 24), con1);
++	}
++	return khz / mt6797_ckdiv_ratio(sel);
++}
++
++/* OPP actual: la frecuencia más baja de la tabla que no queda por debajo de la medida (lado seguro). */
++static int mt6797_find_idx(struct mt6797_domain *dom, unsigned int khz)
++{
++	int i;
++
++	for (i = dom->nr_opp - 1; i > 0; i--)
++		if (dom->opp[i].khz + 2000 >= khz)
++			return i;
++	return 0;
++}
++
++static unsigned int mt6797_get(unsigned int cpu)
++{
++	struct cpufreq_policy *policy = cpufreq_cpu_get_raw(cpu);
++	struct mt6797_domain *dom = policy ? policy->driver_data : NULL;
++
++	return dom ? dom->opp[dom->idx].khz : 0;
++}
++
++static int mt6797_init(struct cpufreq_policy *policy)
++{
++	struct mt6797_cpufreq *d = mt6797_data;
++	struct mt6797_domain *dom = NULL;
++	int i;
++
++	for (i = LL; i <= B; i++)
++		if (policy->cpu >= d->dom[i].first_cpu &&
++		    policy->cpu < d->dom[i].first_cpu + d->dom[i].nr_cpus)
++			dom = &d->dom[i];
++	if (!dom)
++		return -ENODEV;
++
++	for (i = 0; i < dom->nr_cpus; i++)
++		cpumask_set_cpu(dom->first_cpu + i, policy->cpus);
++	policy->driver_data = dom;
++	policy->freq_table = dom->table;
++	policy->cpuinfo.transition_latency = 100 * NSEC_PER_USEC;
++	policy->cur = dom->opp[dom->idx].khz;
++	return 0;
++}
++
++/*
++ * Al volver un clúster apagado entero (hotplug, suspensión), el parche SMP rehace la secuencia de encendido del big
++ * y deja su LDO de SRAM a 1,1 V; ATF deja su PLL a otra frecuencia.
++ */
++static int mt6797_online(struct cpufreq_policy *policy)
++{
++	struct mt6797_domain *dom = policy->driver_data;
++	struct mt6797_cpufreq *d = mt6797_data;
++	int ret = 0;
++
++	mutex_lock(&d->lock);
++	if (dom == &d->dom[B]) {
++		const struct mt6797_opp *o = &dom->opp[dom->idx];
++		unsigned int khz = mt6797_read_khz(d, dom);
++
++		/*
++		 * La lectura de la PLL no es fiable aquí (ml-hp-2: decía 338 MHz y el big iba a ~2,5 GHz con 0,80 V):
++		 * tensión al máximo, reprogramar POSDIV, CKDIV y PLL del OPP actual y volver a su tensión.
++		 */
++		/* el parche SMP deja la VSRAM a 1,1 V sea cual sea vproc: devolverla a la que toca antes de nada */
++		ret = mt6797_set_vsram(d, 1, mt6797_vsram_for(d->vproc_uv[1]));
++		if (!ret)
++			ret = mt6797_set_vproc(d, 1, VPROC_MAX_UV);
++		if (!ret && !mt6797_sema_get(d)) {
++			mt6797_set_big_posdiv(d, dom, o->pos_div);
++			mt6797_set_clkdiv(d, dom, o->clk_div);
++			ret = mt6797_set_big_pll(d, dom, o);
++			mt6797_sema_put(d);
++		}
++		if (!ret)
++			ret = mt6797_set_vproc(d, 1, mt6797_opp_uv(d, dom, dom->idx));
++		dev_info(d->dev, "big de vuelta: leído %u kHz, fijado %u kHz: %d\n", khz, o->khz, ret);
++	} else {
++		dom->idx = mt6797_find_idx(dom, mt6797_read_khz(d, dom));
++	}
++	policy->cur = dom->opp[dom->idx].khz;
++	mutex_unlock(&d->lock);
++	return ret;
++}
++
++static int mt6797_offline(struct cpufreq_policy *policy)
++{
++	return 0;
++}
++
++static struct cpufreq_driver mt6797_cpufreq_driver = {
++	.online = mt6797_online,
++	.offline = mt6797_offline,
++	.name = "mt6797-cpufreq",
++	.flags = CPUFREQ_NEED_INITIAL_FREQ_CHECK | CPUFREQ_HAVE_GOVERNOR_PER_POLICY | CPUFREQ_IS_COOLING_DEV,
++	.verify = cpufreq_generic_frequency_table_verify,
++	.target_index = mt6797_target_index,
++	.get = mt6797_get,
++	.init = mt6797_init,
++};
++
++/* Tensiones leídas del hardware (DA9214 y LDO de SRAM de LL/L/CCI), para comprobar el DVFS. */
++static ssize_t voltages_show(struct device *dev, struct device_attribute *attr, char *buf)
++{
++	struct mt6797_cpufreq *d = mt6797_data;
++	u32 ldo;
++	int a, b;
++
++	if (!d)
++		return -ENODEV;
++	mutex_lock(&d->lock);
++	a = mt6797_buck_get(d, 0);
++	b = mt6797_buck_get(d, 1);
++	ldo = readl(d->infracfg + CPULDO_CTRL_1) & 0xf;
++	mutex_unlock(&d->lock);
++	return sysfs_emit(buf, "vproc1 %d vsram_l %u vproc2 %d vsram_b %d eem %d\n", a, (ldo - 3) * 25000 + 900000,
++			  b, d->vsram_uv[1], d->eem_hot);
++}
++static DEVICE_ATTR_RO(voltages);
++
++static void __iomem *mt6797_map(struct platform_device *pdev, const char *name)
++{
++	struct resource *res = platform_get_resource_byname(pdev, IORESOURCE_MEM, name);
++
++	/* regiones que ya tienen mapeadas otros drivers: sin reservarlas */
++	if (!res)
++		return IOMEM_ERR_PTR(-EINVAL);
++	return devm_ioremap(&pdev->dev, res->start, resource_size(res)) ?: IOMEM_ERR_PTR(-ENOMEM);
++}
++
++static int mt6797_cpufreq_probe(struct platform_device *pdev)
++{
++	static const struct {
++		const char *name;
++		const struct mt6797_opp *opp;
++		unsigned int n, first, nr, mux, ckdiv;
++	} desc[NR_DOMAINS] = {
++		[LL]  = { "LL",  opp_ll,  ARRAY_SIZE(opp_ll),  0, 4, 2, 5 },
++		[L]   = { "L",   opp_l,   ARRAY_SIZE(opp_l),   4, 4, 4, 10 },
++		[B]   = { "B",   opp_b,   ARRAY_SIZE(opp_b),   8, 2, 0, 0 },
++		[CCI] = { "CCI", opp_cci, ARRAY_SIZE(opp_cci), 0, 0, 6, 15 },
++	};
++	struct device *dev = &pdev->dev;
++	struct mt6797_cpufreq *d;
++	struct clk *clk;
++	int i, j, ret;
++	u8 page;
++
++	d = devm_kzalloc(dev, sizeof(*d), GFP_KERNEL);
++	if (!d)
++		return -ENOMEM;
++	d->dev = dev;
++	mutex_init(&d->lock);
++	d->mcumixed = mt6797_map(pdev, "mcumixed");
++	d->topckgen = mt6797_map(pdev, "topckgen");
++	d->infracfg = mt6797_map(pdev, "infracfg");
++	d->semaphore = mt6797_map(pdev, "semaphore");
++	d->i2c = mt6797_map(pdev, "i2c6");
++	if (IS_ERR(d->mcumixed) || IS_ERR(d->topckgen) || IS_ERR(d->infracfg) || IS_ERR(d->semaphore) ||
++	    IS_ERR(d->i2c))
++		return -ENOMEM;
++	clk = devm_clk_get_enabled(dev, "i2c6");
++	if (IS_ERR(clk))
++		return dev_err_probe(dev, PTR_ERR(clk), "reloj de i2c6\n");
++
++	/* página 0 del DA9214 (VBUCKx_A) */
++	ret = mt6797_da9214_read(d, DA9214_PAGE_CON, &page);
++	if (!ret && page & 0x0f)
++		ret = mt6797_da9214_write(d, DA9214_PAGE_CON, page & ~0x0f);
++	if (ret)
++		return dev_err_probe(dev, ret, "DA9214 no responde\n");
++
++	for (i = 0; i < NR_DOMAINS; i++) {
++		struct mt6797_domain *dom = &d->dom[i];
++		unsigned int khz;
++
++		dom->name = desc[i].name;
++		dom->opp = desc[i].opp;
++		dom->nr_opp = desc[i].n;
++		dom->first_cpu = desc[i].first;
++		dom->nr_cpus = desc[i].nr;
++		dom->mux_shift = desc[i].mux;
++		dom->ckdiv_shift = desc[i].ckdiv;
++		dom->table = devm_kcalloc(dev, dom->nr_opp + 1, sizeof(*dom->table), GFP_KERNEL);
++		if (!dom->table)
++			return -ENOMEM;
++		for (j = 0; j < dom->nr_opp; j++)
++			dom->table[j].frequency = dom->opp[j].khz;
++		dom->table[j].frequency = CPUFREQ_TABLE_END;
++		khz = mt6797_read_khz(d, dom);
++		dom->idx = mt6797_find_idx(dom, khz);
++		dev_info(dev, "%s: %u kHz -> OPP %d (%u kHz)\n", dom->name, khz, dom->idx, dom->opp[dom->idx].khz);
++	}
++
++	/* Sin lectura fiable de los LDO de SRAM: se fijan ya a lo que pide la tensión actual. */
++	for (i = 0; i < 2; i++) {
++		int uv = mt6797_buck_get(d, i);
++
++		if (uv < 0)
++			return uv;
++		d->vproc_uv[i] = uv;
++		dev_info(dev, "vproc%d %d uV, CPULDO 0x%08x 0x%08x 0x%08x\n", i + 1, uv,
++			 readl(d->infracfg + CPULDO_CTRL_0), readl(d->infracfg + CPULDO_CTRL_1),
++			 readl(d->infracfg + CPULDO_CTRL_2));
++		if (!enable)
++			continue;
++		d->vsram_uv[i] = VSRAM_MAX_UV;
++		ret = mt6797_set_vsram(d, i, mt6797_vsram_for(uv));
++		if (ret)
++			return ret;
++	}
++
++	if (!enable)
++		return 0;
++
++	for (i = 0; i < NR_DOMAINS; i++) {
++		static const char * const prop[NR_DOMAINS] = {
++			[LL] = "mediatek,eem-microvolt-ll", [L] = "mediatek,eem-microvolt-l",
++			[B] = "mediatek,eem-microvolt-b", [CCI] = "mediatek,eem-microvolt-cci",
++		};
++		struct mt6797_domain *dom = &d->dom[i];
++
++		dom->has_eem = dom->nr_opp == ARRAY_SIZE(dom->eem_uv) &&
++			       !of_property_read_u32_array(dev->of_node, prop[i], dom->eem_uv, dom->nr_opp);
++	}
++	ret = devm_delayed_work_autocancel(dev, &d->eem_work, mt6797_eem_work);
++	if (ret)
++		return ret;
++
++	mt6797_data = d;
++	ret = cpufreq_register_driver(&mt6797_cpufreq_driver);
++	if (ret) {
++		mt6797_data = NULL;
++		return ret;
++	}
++	schedule_delayed_work(&d->eem_work, 5 * HZ);
++	return device_create_file(dev, &dev_attr_voltages);
++}
++
++static void mt6797_cpufreq_remove(struct platform_device *pdev)
++{
++	device_remove_file(&pdev->dev, &dev_attr_voltages);
++	if (mt6797_data)
++		cpufreq_unregister_driver(&mt6797_cpufreq_driver);
++	mt6797_data = NULL;
++}
++
++static const struct of_device_id mt6797_cpufreq_of_match[] = {
++	{ .compatible = "mediatek,mt6797-cpufreq" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, mt6797_cpufreq_of_match);
++
++static struct platform_driver mt6797_cpufreq_platform_driver = {
++	.probe = mt6797_cpufreq_probe,
++	.remove = mt6797_cpufreq_remove,
++	.driver = {
++		.name = "mt6797-cpufreq",
++		.of_match_table = mt6797_cpufreq_of_match,
++	},
++};
++module_platform_driver(mt6797_cpufreq_platform_driver);
++
++MODULE_DESCRIPTION("MT6797 CPU DVFS (E-PAD, SB bin)");
++MODULE_LICENSE("GPL");

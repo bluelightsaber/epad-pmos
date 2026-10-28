@@ -1,0 +1,158 @@
+From 89ce084697973af2e67baec74baf7a5f86b0a48a Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 00:20:00 +0200
+Subject: [PATCH 04/20] regulator: add minimal MT6351 regulator driver over the
+ PMIC wrapper
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/regulator/Kconfig            |  6 ++
+ drivers/regulator/Makefile           |  1 +
+ drivers/regulator/mt6351-regulator.c | 94 ++++++++++++++++++++++++++++
+ drivers/soc/mediatek/mtk-pmic-wrap.c |  3 +-
+ 4 files changed, 103 insertions(+), 1 deletion(-)
+ create mode 100644 drivers/regulator/mt6351-regulator.c
+
+diff --git a/drivers/regulator/Kconfig b/drivers/regulator/Kconfig
+index a54a54919..2781493d1 100644
+--- a/drivers/regulator/Kconfig
++++ b/drivers/regulator/Kconfig
+@@ -937,6 +937,12 @@ config REGULATOR_MT6332
+ 	  This driver supports the control of different power rails of device
+ 	  through regulator interface
+ 
++config REGULATOR_MT6351
++	tristate "MediaTek MT6351 PMIC LDOs (minimal, E-PAD)"
++	depends on MTK_PMIC_WRAP
++	help
++	  Minimal enable/disable support for the LDOs of the MediaTek MT6351 PMIC behind the MT6797 PMIC wrapper.
++
+ config REGULATOR_MT6357
+ 	tristate "MediaTek MT6357 PMIC"
+ 	depends on MFD_MT6397
+diff --git a/drivers/regulator/Makefile b/drivers/regulator/Makefile
+index 134eee274..927f1d713 100644
+--- a/drivers/regulator/Makefile
++++ b/drivers/regulator/Makefile
+@@ -111,6 +111,7 @@ obj-$(CONFIG_REGULATOR_MT6315)  += mt6316-regulator.o
+ obj-$(CONFIG_REGULATOR_MT6323)	+= mt6323-regulator.o
+ obj-$(CONFIG_REGULATOR_MT6331)	+= mt6331-regulator.o
+ obj-$(CONFIG_REGULATOR_MT6332)	+= mt6332-regulator.o
++obj-$(CONFIG_REGULATOR_MT6351)	+= mt6351-regulator.o
+ obj-$(CONFIG_REGULATOR_MT6357)	+= mt6357-regulator.o
+ obj-$(CONFIG_REGULATOR_MT6358)	+= mt6358-regulator.o
+ obj-$(CONFIG_REGULATOR_MT6359)	+= mt6359-regulator.o
+diff --git a/drivers/regulator/mt6351-regulator.c b/drivers/regulator/mt6351-regulator.c
+new file mode 100644
+index 000000000..4a7524097
+--- /dev/null
++++ b/drivers/regulator/mt6351-regulator.c
+@@ -0,0 +1,94 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Reguladores LDO del PMIC MediaTek MT6351 (accedido por el PMIC wrapper del MT6797), versión mínima para la
++ * E-PAD: solo encender/apagar con la tensión que deja el firmware. Bits de habilitación tomados del kernel 3.18
++ * de MediaTek (drivers/misc/mediatek/power/mt6797/pmic.c y upmu_hw.h): RG_<LDO>_EN, bit 1 del registro CON.
++ *
++ * Solo se declaran los LDO que Android deja encendidos en esta tablet; en el DT se marcan regulator-always-on
++ * para que el kernel nunca apague uno que el sistema necesite.
++ */
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/regmap.h>
++#include <linux/regulator/driver.h>
++#include <linux/regulator/of_regulator.h>
++
++#define MT6351_LDO(_name, _reg, _uv)					\
++	{								\
++		.name = #_name,						\
++		.of_match = of_match_ptr("ldo_" #_name),		\
++		.regulators_node = of_match_ptr("regulators"),		\
++		.ops = &mt6351_ldo_ops,					\
++		.type = REGULATOR_VOLTAGE,				\
++		.owner = THIS_MODULE,					\
++		.n_voltages = 1,					\
++		.min_uV = (_uv),					\
++		.fixed_uV = (_uv),					\
++		.enable_reg = (_reg),					\
++		.enable_mask = BIT(1),					\
++	}
++
++static const struct regulator_ops mt6351_ldo_ops = {
++	.enable = regulator_enable_regmap,
++	.disable = regulator_disable_regmap,
++	.is_enabled = regulator_is_enabled_regmap,
++	.list_voltage = regulator_list_voltage_linear,
++};
++
++static const struct regulator_desc mt6351_ldos[] = {
++	MT6351_LDO(va18, 0x0a00, 1800000),
++	MT6351_LDO(vtcxo24, 0x0a04, 2375000),
++	MT6351_LDO(vcn28, 0x0a0c, 2800000),
++	MT6351_LDO(vusb33, 0x0a16, 3300000),
++	MT6351_LDO(vemc, 0x0a28, 3000000),
++	MT6351_LDO(vio28, 0x0a34, 2800000),
++	MT6351_LDO(vio18, 0x0a4c, 1800000),
++	MT6351_LDO(vcn18, 0x0a52, 1800000),
++	MT6351_LDO(vxo22, 0x0a64, 2200000),
++	MT6351_LDO(va10, 0x0a6e, 950000),
++	MT6351_LDO(vmipi, 0x0a7a, 1800000),
++	MT6351_LDO(vgp3, 0x0a80, 1810000),
++	MT6351_LDO(vcn33_bt, 0x0a98, 3300000),
++	MT6351_LDO(vcn33_wifi, 0x0a9a, 3300000),
++	MT6351_LDO(vldo28, 0x0aa2, 2800000),
++};
++
++static int mt6351_regulator_probe(struct platform_device *pdev)
++{
++	struct regulator_config config = {};
++	struct regmap *regmap = dev_get_regmap(pdev->dev.parent, NULL);
++	int i;
++
++	if (!regmap)
++		return dev_err_probe(&pdev->dev, -ENODEV, "sin regmap del PMIC wrapper\n");
++
++	config.dev = &pdev->dev;
++	config.regmap = regmap;
++	for (i = 0; i < ARRAY_SIZE(mt6351_ldos); i++) {
++		struct regulator_dev *rdev = devm_regulator_register(&pdev->dev, &mt6351_ldos[i], &config);
++
++		if (IS_ERR(rdev))
++			return dev_err_probe(&pdev->dev, PTR_ERR(rdev), "no se pudo registrar %s\n",
++					     mt6351_ldos[i].name);
++	}
++	return 0;
++}
++
++static const struct of_device_id mt6351_regulator_of_match[] = {
++	{ .compatible = "mediatek,mt6351" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, mt6351_regulator_of_match);
++
++static struct platform_driver mt6351_regulator_driver = {
++	.driver = {
++		.name = "mt6351-regulator",
++		.of_match_table = mt6351_regulator_of_match,
++	},
++	.probe = mt6351_regulator_probe,
++};
++module_platform_driver(mt6351_regulator_driver);
++
++MODULE_DESCRIPTION("LDO del PMIC MediaTek MT6351 (mínimo, E-PAD)");
++MODULE_LICENSE("GPL");
+diff --git a/drivers/soc/mediatek/mtk-pmic-wrap.c b/drivers/soc/mediatek/mtk-pmic-wrap.c
+index 0bcd85826..c734e7db9 100644
+--- a/drivers/soc/mediatek/mtk-pmic-wrap.c
++++ b/drivers/soc/mediatek/mtk-pmic-wrap.c
+@@ -2495,7 +2495,8 @@ static int pwrap_probe(struct platform_device *pdev)
+ 		return PTR_ERR(wrp->base);
+ 
+ 	if (HAS_CAP(wrp->master->caps, PWRAP_CAP_RESET)) {
+-		wrp->rstc = devm_reset_control_get(wrp->dev, "pwrap");
++		/* E-PAD: el MT6797 no declara el reset del pwrap; solo hace falta si hay que inicializarlo. */
++		wrp->rstc = devm_reset_control_get_optional_exclusive(wrp->dev, "pwrap");
+ 		if (IS_ERR(wrp->rstc)) {
+ 			ret = PTR_ERR(wrp->rstc);
+ 			dev_dbg(wrp->dev, "cannot get pwrap reset: %d\n", ret);

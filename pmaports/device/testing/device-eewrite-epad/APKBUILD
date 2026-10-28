@@ -1,0 +1,35 @@
+# Reference: <https://postmarketos.org/devicepkg>
+# Maintainer: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+pkgname=device-eewrite-epad
+pkgdesc="Eewrite E-PAD"
+pkgver=1
+pkgrel=1
+url="https://postmarketos.org"
+license="MIT"
+arch="aarch64"
+options="!check !archcheck"
+depends="
+	linux-eewrite-epad
+	mkbootimg
+	postmarketos-base
+"
+makedepends="devicepkg-dev"
+source="deviceinfo"
+subpackages="$pkgname-nonfree-firmware:nonfree_firmware"
+
+build() {
+	devicepkg_build $startdir $pkgname
+}
+
+package() {
+	devicepkg_package $startdir $pkgname
+}
+
+nonfree_firmware() {
+	pkgdesc="WiFi, Bluetooth and SPM firmware"
+	depends="firmware-eewrite-epad wireless-regdb"
+	mkdir "$subpkgdir"
+}
+sha512sums="
+b689ee2be68aa30e9cbaf68c1e7d686367e8dc308642a530dcc3e5a99550abb21faf5a7b98419630a152877398b3facafc78a562dfa2b5b1b5529cae201510ae  deviceinfo
+"

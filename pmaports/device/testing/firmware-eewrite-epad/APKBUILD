@@ -1,0 +1,36 @@
+# Maintainer: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+# Proprietary firmware: NOT distributed. Extract it from your own unit (the WiFi NVRAM holds its MAC address).
+# CONNSYS (WiFi/BT) from Android /vendor/firmware and the NVRAM/BT_Addr partitions; SPM PCM programs from Android.
+pkgname=firmware-eewrite-epad
+pkgver=1
+pkgrel=0
+pkgdesc="Firmware for the Eewrite E-PAD (MT6797 CONNSYS WiFi/BT, SPM)"
+url="https://postmarketos.org"
+arch="aarch64"
+license="proprietary"
+options="!check !strip !archcheck !tracedeps pmb:cross-native"
+source="
+	ROMv3_patch_1_0_hdr.bin
+	ROMv3_patch_1_1_hdr.bin
+	WIFI_RAM_CODE_6797
+	mt6797-epad-wifi-nvram.bin
+	BT.bin
+	pcm_suspend.bin
+	pcm_vcorefs_lpm.bin
+"
+
+package() {
+	local d="$pkgdir"/lib/firmware/mediatek
+	install -Dm644 "$srcdir"/ROMv3_patch_1_0_hdr.bin "$srcdir"/ROMv3_patch_1_1_hdr.bin \
+		"$srcdir"/WIFI_RAM_CODE_6797 "$srcdir"/mt6797-epad-wifi-nvram.bin -t "$d"
+	install -Dm644 "$srcdir"/BT.bin "$srcdir"/pcm_suspend.bin "$srcdir"/pcm_vcorefs_lpm.bin -t "$d"/mt6797
+}
+sha512sums="
+85d95be3b45facb9397e1c89c57b495e47a77f6c98065296be081dc285f5616737502f19b21c4d72a889354defb4a7d119d427767eb21bea545ad4d4b5131686  ROMv3_patch_1_0_hdr.bin
+7083af440b8127ceb631238c52565ee3e3c0bc00736b09932b0d9c35dc0090d6e19d43358b3a787202195be3b92fb1a6b74384a74f536b9fa118057c26a4a17a  ROMv3_patch_1_1_hdr.bin
+67e0e7f4566aba518c30a344047ccdcce9947baba4752427c0873dd39286fad08f0c04c52d64e57744abc21805206e6d20d1c7fb6cfa3f32685f1695d896f2d6  WIFI_RAM_CODE_6797
+3e2a25366efcf1deb92e3839fa320777610471197178eb9f9ec114e3dafab4e9cb7fefc248174bca1ca3600be72b9c861029dd1e42adf72079b5db5fe437c5e8  mt6797-epad-wifi-nvram.bin
+96263cab55e1e4745148f29e5f4843215c17078f5236f6e34ab0c0779e56d8105af0b61f1f7def6798b599f2b776a0f5048f4defa08a3e320ed301164c2b6735  BT.bin
+9a9f456f601c06fd826e1aef926ce4884d46afbe9f4eef70aa5b8c0fa67d01ce6c09e885c22f2f07534765a768bd0feb3dc7af1b79a35e6f6e2e9c535b47ae4e  pcm_suspend.bin
+87cdf7e5bda004ebab17fd75142be398faa84bee0c5809e8102bf38f0057614e67e4936b5e51da0b180addcccdcaa996e4bc77da61a93e0e26920a72662bcfe6  pcm_vcorefs_lpm.bin
+"

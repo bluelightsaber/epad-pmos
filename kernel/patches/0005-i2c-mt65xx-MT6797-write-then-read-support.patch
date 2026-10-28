@@ -1,0 +1,47 @@
+From 1d047a6fded5a6fa2c630bed7ed0ff10e9d6d6af Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 00:20:00 +0200
+Subject: [PATCH 05/20] i2c: mt65xx: MT6797 write-then-read support
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/i2c/busses/i2c-mt65xx.c | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
+
+diff --git a/drivers/i2c/busses/i2c-mt65xx.c b/drivers/i2c/busses/i2c-mt65xx.c
+index 307925fb7..4ef90591c 100644
+--- a/drivers/i2c/busses/i2c-mt65xx.c
++++ b/drivers/i2c/busses/i2c-mt65xx.c
+@@ -456,6 +456,24 @@ static const struct mtk_i2c_compatible mt7986_compat = {
+ 	.max_dma_support = 32,
+ };
+ 
++/*
++ * E-PAD: el MT6797 hace WRRD (escritura + lectura con START repetido) con la longitud de la lectura en
++ * TRANSFER_LEN_AUX (0x6c), como el MT8173 (driver i2c-mtk.c del kernel 3.18). Con mt6577_compat las
++ * transferencias combinadas agotan el tiempo.
++ */
++static const struct mtk_i2c_compatible mt6797_compat = {
++	.regs = mt_i2c_regs_v1,
++	.pmic_i2c = 0,
++	.dcm = 1,
++	.auto_restart = 1,
++	.aux_len_reg = 1,
++	.timing_adjust = 0,
++	.dma_sync = 0,
++	.ltiming_adjust = 0,
++	.apdma_sync = 0,
++	.max_dma_support = 32,
++};
++
+ static const struct mtk_i2c_compatible mt8173_compat = {
+ 	.regs = mt_i2c_regs_v1,
+ 	.pmic_i2c = 0,
+@@ -526,6 +544,7 @@ static const struct mtk_i2c_compatible mt8192_compat = {
+ static const struct of_device_id mtk_i2c_of_match[] = {
+ 	{ .compatible = "mediatek,mt2712-i2c", .data = &mt2712_compat },
+ 	{ .compatible = "mediatek,mt6577-i2c", .data = &mt6577_compat },
++	{ .compatible = "mediatek,mt6797-i2c", .data = &mt6797_compat },
+ 	{ .compatible = "mediatek,mt6589-i2c", .data = &mt6589_compat },
+ 	{ .compatible = "mediatek,mt7622-i2c", .data = &mt7622_compat },
+ 	{ .compatible = "mediatek,mt7981-i2c", .data = &mt7981_compat },

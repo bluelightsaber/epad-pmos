@@ -1,0 +1,357 @@
+From 2beb04c13c3afdfd09d92ffe27a7f1dec201daa4 Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 00:20:03 +0200
+Subject: [PATCH 14/20] rtc: add MT6351 RTC driver
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/rtc/Kconfig      |   6 +
+ drivers/rtc/Makefile     |   1 +
+ drivers/rtc/rtc-mt6351.c | 309 +++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 316 insertions(+)
+ create mode 100644 drivers/rtc/rtc-mt6351.c
+
+diff --git a/drivers/rtc/Kconfig b/drivers/rtc/Kconfig
+index 01def8231..3a3db9458 100644
+--- a/drivers/rtc/Kconfig
++++ b/drivers/rtc/Kconfig
+@@ -1945,6 +1945,12 @@ config RTC_DRV_MT2712
+ 	  This drive can also be built as a module. If so, the module
+ 	  will be called rtc-mt2712.
+ 
++config RTC_DRV_MT6351
++	tristate "MediaTek MT6351 PMIC RTC (E-PAD)"
++	depends on MTK_PMIC_WRAP
++	help
++	  Hora del RTC del PMIC MT6351 a través del regmap del PMIC wrapper (sin alarmas).
++
+ config RTC_DRV_MT6397
+ 	tristate "MediaTek PMIC based RTC"
+ 	depends on MFD_MT6397 || COMPILE_TEST
+diff --git a/drivers/rtc/Makefile b/drivers/rtc/Makefile
+index 0347645b0..7df3ec6a4 100644
+--- a/drivers/rtc/Makefile
++++ b/drivers/rtc/Makefile
+@@ -114,6 +114,7 @@ obj-$(CONFIG_RTC_DRV_MSC313)	+= rtc-msc313.o
+ obj-$(CONFIG_RTC_DRV_SSD202D)	+= rtc-ssd202d.o
+ obj-$(CONFIG_RTC_DRV_MSM6242)	+= rtc-msm6242.o
+ obj-$(CONFIG_RTC_DRV_MT2712)	+= rtc-mt2712.o
++obj-$(CONFIG_RTC_DRV_MT6351)	+= rtc-mt6351.o
+ obj-$(CONFIG_RTC_DRV_MT6397)	+= rtc-mt6397.o
+ obj-$(CONFIG_RTC_DRV_MT7622)	+= rtc-mt7622.o
+ obj-$(CONFIG_RTC_DRV_MV)	+= rtc-mv.o
+diff --git a/drivers/rtc/rtc-mt6351.c b/drivers/rtc/rtc-mt6351.c
+new file mode 100644
+index 000000000..156faaecc
+--- /dev/null
++++ b/drivers/rtc/rtc-mt6351.c
+@@ -0,0 +1,309 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * RTC del PMIC MT6351 (E-PAD) a través del regmap del PMIC wrapper.
++ *
++ * Registros como los del MT6397 (include/linux/mfd/mt6397/rtc.h) en la base 0x4000; registro de año = año − 1968, en UTC
++ * (como lo deja Android). Alarma si el nodo tiene interrupción (fuente 9 de mt6351-irq).
++ * rtc-mt6397 no sirve tal cual: espera un MFD mt6397 como padre.
++ */
++#include <linux/mfd/mt6397/rtc.h>
++#include <linux/interrupt.h>
++#include <linux/module.h>
++#include <linux/mod_devicetable.h>
++#include <linux/mutex.h>
++#include <linux/platform_device.h>
++#include <linux/regmap.h>
++#include <linux/rtc.h>
++#include <linux/delay.h>
++#include <linux/of.h>
++#include <linux/reboot.h>
++
++#define MT6351_RTC_BASE		0x4000
++
++struct mt6351_rtc {
++	struct regmap *regmap;
++	struct rtc_device *rtc_dev;
++	struct mutex lock;
++	int irq;
++};
++
++static int mt6351_rtc_write_trigger(struct mt6351_rtc *rtc)
++{
++	u32 bbpu;
++
++	regmap_write(rtc->regmap, MT6351_RTC_BASE + RTC_WRTGR_MT6397, 1);
++	return regmap_read_poll_timeout(rtc->regmap, MT6351_RTC_BASE + RTC_BBPU, bbpu,
++					!(bbpu & RTC_BBPU_CBUSY), 10, 100000);
++}
++
++static int mt6351_rtc_read_raw(struct mt6351_rtc *rtc, u16 *data)
++{
++	u32 v;
++	int i, ret;
++
++	for (i = 0; i < RTC_OFFSET_COUNT; i++) {
++		ret = regmap_read(rtc->regmap, MT6351_RTC_BASE + RTC_TC_SEC + 2 * i, &v);
++		if (ret)
++			return ret;
++		data[i] = v;
++	}
++	return 0;
++}
++
++static int mt6351_rtc_read_time(struct device *dev, struct rtc_time *tm)
++{
++	struct mt6351_rtc *rtc = dev_get_drvdata(dev);
++	u16 d[RTC_OFFSET_COUNT];
++	u32 sec;
++	int ret;
++
++	mutex_lock(&rtc->lock);
++	do {
++		ret = mt6351_rtc_read_raw(rtc, d);
++		if (!ret)
++			ret = regmap_read(rtc->regmap, MT6351_RTC_BASE + RTC_TC_SEC, &sec);
++	} while (!ret && sec < d[RTC_OFFSET_SEC]);	/* el segundo dio la vuelta durante la lectura */
++	mutex_unlock(&rtc->lock);
++	if (ret)
++		return ret;
++
++	tm->tm_sec = d[RTC_OFFSET_SEC];
++	tm->tm_min = d[RTC_OFFSET_MIN];
++	tm->tm_hour = d[RTC_OFFSET_HOUR];
++	tm->tm_mday = d[RTC_OFFSET_DOM];
++	tm->tm_wday = d[RTC_OFFSET_DOW] - 1;
++	tm->tm_mon = (d[RTC_OFFSET_MTH] & RTC_TC_MTH_MASK) - 1;
++	tm->tm_year = d[RTC_OFFSET_YEAR] + 68;	/* años desde 1900; el registro cuenta desde 1968 */
++	return 0;
++}
++
++static int mt6351_rtc_set_time(struct device *dev, struct rtc_time *tm)
++{
++	struct mt6351_rtc *rtc = dev_get_drvdata(dev);
++	u16 d[RTC_OFFSET_COUNT] = {
++		[RTC_OFFSET_SEC] = tm->tm_sec,
++		[RTC_OFFSET_MIN] = tm->tm_min,
++		[RTC_OFFSET_HOUR] = tm->tm_hour,
++		[RTC_OFFSET_DOM] = tm->tm_mday,
++		[RTC_OFFSET_DOW] = tm->tm_wday + 1,
++		[RTC_OFFSET_MTH] = tm->tm_mon + 1,
++		[RTC_OFFSET_YEAR] = tm->tm_year - 68,
++	};
++	int i, ret = 0;
++
++	mutex_lock(&rtc->lock);
++	for (i = 0; i < RTC_OFFSET_COUNT && !ret; i++)
++		ret = regmap_write(rtc->regmap, MT6351_RTC_BASE + RTC_TC_SEC + 2 * i, d[i]);
++	if (!ret)
++		ret = mt6351_rtc_write_trigger(rtc);
++	mutex_unlock(&rtc->lock);
++	return ret;
++}
++
++/*
++ * Alarma (como rtc-mt6397). Los bits altos de los registros AL_* guardan datos de Android (FGSOC, etc.): se
++ * conservan.
++ */
++static const u16 mt6351_al_mask[RTC_OFFSET_COUNT] = {
++	[RTC_OFFSET_SEC] = RTC_AL_SEC_MASK, [RTC_OFFSET_MIN] = RTC_AL_MIN_MASK, [RTC_OFFSET_HOUR] = RTC_AL_HOU_MASK,
++	[RTC_OFFSET_DOM] = RTC_AL_DOM_MASK, [RTC_OFFSET_DOW] = RTC_AL_DOW_MASK, [RTC_OFFSET_MTH] = RTC_AL_MTH_MASK,
++	[RTC_OFFSET_YEAR] = RTC_AL_YEA_MASK,
++};
++
++static int mt6351_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alm)
++{
++	struct mt6351_rtc *rtc = dev_get_drvdata(dev);
++	u32 v, irqen = 0, pdn2 = 0;
++	u16 d[RTC_OFFSET_COUNT];
++	int i;
++
++	mutex_lock(&rtc->lock);
++	regmap_read(rtc->regmap, MT6351_RTC_BASE + RTC_IRQ_EN, &irqen);
++	regmap_read(rtc->regmap, MT6351_RTC_BASE + RTC_PDN2, &pdn2);
++	for (i = 0; i < RTC_OFFSET_COUNT; i++) {
++		regmap_read(rtc->regmap, MT6351_RTC_BASE + RTC_AL_SEC + 2 * i, &v);
++		d[i] = v & mt6351_al_mask[i];
++	}
++	mutex_unlock(&rtc->lock);
++
++	alm->enabled = !!(irqen & RTC_IRQ_EN_AL);
++	alm->pending = !!(pdn2 & RTC_PDN2_PWRON_ALARM);
++	alm->time.tm_sec = d[RTC_OFFSET_SEC];
++	alm->time.tm_min = d[RTC_OFFSET_MIN];
++	alm->time.tm_hour = d[RTC_OFFSET_HOUR];
++	alm->time.tm_mday = d[RTC_OFFSET_DOM];
++	alm->time.tm_mon = d[RTC_OFFSET_MTH] - 1;
++	alm->time.tm_year = d[RTC_OFFSET_YEAR] + 68;
++	return 0;
++}
++
++static int mt6351_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alm)
++{
++	struct mt6351_rtc *rtc = dev_get_drvdata(dev);
++	struct rtc_time *tm = &alm->time;
++	u16 d[RTC_OFFSET_COUNT] = {
++		[RTC_OFFSET_SEC] = tm->tm_sec,
++		[RTC_OFFSET_MIN] = tm->tm_min,
++		[RTC_OFFSET_HOUR] = tm->tm_hour,
++		[RTC_OFFSET_DOM] = tm->tm_mday,
++		[RTC_OFFSET_MTH] = tm->tm_mon + 1,
++		[RTC_OFFSET_YEAR] = tm->tm_year - 68,
++	};
++	int i, ret = 0;
++
++	mutex_lock(&rtc->lock);
++	if (alm->enabled) {
++		for (i = 0; i < RTC_OFFSET_COUNT && !ret; i++)
++			if (i != RTC_OFFSET_DOW)
++				ret = regmap_update_bits(rtc->regmap, MT6351_RTC_BASE + RTC_AL_SEC + 2 * i,
++							 mt6351_al_mask[i], d[i]);
++		if (!ret)
++			ret = regmap_write(rtc->regmap, MT6351_RTC_BASE + RTC_AL_MASK, RTC_AL_MASK_DOW);
++		if (!ret)
++			ret = regmap_update_bits(rtc->regmap, MT6351_RTC_BASE + RTC_IRQ_EN, RTC_IRQ_EN_ONESHOT_AL,
++						 RTC_IRQ_EN_ONESHOT_AL);
++	} else {
++		ret = regmap_update_bits(rtc->regmap, MT6351_RTC_BASE + RTC_IRQ_EN, RTC_IRQ_EN_ONESHOT_AL, 0);
++	}
++	if (!ret)
++		ret = mt6351_rtc_write_trigger(rtc);
++	mutex_unlock(&rtc->lock);
++	return ret;
++}
++
++static irqreturn_t mt6351_rtc_irq(int irq, void *data)
++{
++	struct mt6351_rtc *rtc = data;
++	u32 sta = 0;
++
++	regmap_read(rtc->regmap, MT6351_RTC_BASE + RTC_IRQ_STA, &sta);
++	if (!(sta & RTC_IRQ_STA_AL))
++		return IRQ_NONE;
++	rtc_update_irq(rtc->rtc_dev, 1, RTC_IRQF | RTC_AF);
++	mutex_lock(&rtc->lock);
++	if (!regmap_update_bits(rtc->regmap, MT6351_RTC_BASE + RTC_IRQ_EN, RTC_IRQ_EN_AL, 0))
++		mt6351_rtc_write_trigger(rtc);
++	mutex_unlock(&rtc->lock);
++	return IRQ_HANDLED;
++}
++
++static const struct rtc_class_ops mt6351_rtc_ops = {
++	.read_time = mt6351_rtc_read_time,
++	.set_time = mt6351_rtc_set_time,
++	.read_alarm = mt6351_rtc_read_alarm,
++	.set_alarm = mt6351_rtc_set_alarm,
++};
++
++/*
++ * Pruebas: bits 4-6 de RTC_PDN1, que lk usa para elegir el modo de arranque (recovery). Permite que un reinicio
++ * por watchdog vuelva al kernel de pruebas (en la partición recovery) en vez de a Android.
++ */
++#define MT6351_RTC_PDN1		0x002c
++static ssize_t boot_bits_show(struct device *dev, struct device_attribute *attr, char *buf)
++{
++	struct mt6351_rtc *rtc = dev_get_drvdata(dev);
++	u32 v = 0;
++
++	regmap_read(rtc->regmap, MT6351_RTC_BASE + MT6351_RTC_PDN1, &v);
++	return sysfs_emit(buf, "0x%04x\n", v);
++}
++
++static ssize_t boot_bits_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t n)
++{
++	struct mt6351_rtc *rtc = dev_get_drvdata(dev);
++	u32 v;
++	int ret;
++
++	if (kstrtou32(buf, 0, &v) || v & ~0x70)
++		return -EINVAL;
++	mutex_lock(&rtc->lock);
++	ret = regmap_update_bits(rtc->regmap, MT6351_RTC_BASE + MT6351_RTC_PDN1, 0x70, v);
++	if (!ret)
++		ret = mt6351_rtc_write_trigger(rtc);
++	mutex_unlock(&rtc->lock);
++	return ret ? ret : n;
++}
++static DEVICE_ATTR_RW(boot_bits);
++
++/*
++ * Apagado (como mt6323-poweroff): BBPU solo con la clave deja PWREN a 0 y el PMIC corta la alimentación.
++ * Sin el mutex: se llama con las interrupciones desactivadas.
++ */
++static int mt6351_rtc_power_off(struct sys_off_data *data)
++{
++	struct mt6351_rtc *rtc = data->cb_data;
++	u32 bbpu;
++	int ret;
++
++	regmap_write(rtc->regmap, MT6351_RTC_BASE + RTC_BBPU, RTC_BBPU_KEY);
++	regmap_write(rtc->regmap, MT6351_RTC_BASE + RTC_WRTGR_MT6397, 1);
++	ret = regmap_read_poll_timeout_atomic(rtc->regmap, MT6351_RTC_BASE + RTC_BBPU, bbpu,
++					      !(bbpu & RTC_BBPU_CBUSY), 10, 100000);
++	if (ret)
++		pr_err("mt6351-rtc: BBPU sin escribir al apagar: %d\n", ret);
++	mdelay(1000);
++	WARN_ONCE(1, "mt6351-rtc: el PMIC no ha cortado la alimentación\n");
++	return NOTIFY_DONE;
++}
++
++static int mt6351_rtc_probe(struct platform_device *pdev)
++{
++	struct mt6351_rtc *rtc;
++	struct rtc_device *rdev;
++
++	rtc = devm_kzalloc(&pdev->dev, sizeof(*rtc), GFP_KERNEL);
++	if (!rtc)
++		return -ENOMEM;
++	rtc->regmap = dev_get_regmap(pdev->dev.parent, NULL);
++	if (!rtc->regmap)
++		return dev_err_probe(&pdev->dev, -EPROBE_DEFER, "sin regmap del PMIC wrapper\n");
++	mutex_init(&rtc->lock);
++	platform_set_drvdata(pdev, rtc);
++	device_create_file(&pdev->dev, &dev_attr_boot_bits);
++
++	rdev = devm_rtc_allocate_device(&pdev->dev);
++	if (IS_ERR(rdev))
++		return PTR_ERR(rdev);
++	rtc->rtc_dev = rdev;
++	rtc->irq = platform_get_irq_optional(pdev, 0);
++	if (rtc->irq > 0) {
++		int ret = devm_request_threaded_irq(&pdev->dev, rtc->irq, NULL, mt6351_rtc_irq, IRQF_ONESHOT,
++						    "mt6351-rtc", rtc);
++
++		if (ret)
++			return ret;
++		device_init_wakeup(&pdev->dev, true);
++	} else {
++		clear_bit(RTC_FEATURE_ALARM, rdev->features);
++	}
++	if (of_device_is_system_power_controller(pdev->dev.of_node)) {
++		int ret = devm_register_sys_off_handler(&pdev->dev, SYS_OFF_MODE_POWER_OFF, SYS_OFF_PRIO_DEFAULT,
++							mt6351_rtc_power_off, rtc);
++
++		if (ret)
++			return ret;
++	}
++	/* registro de año de 7 bits desde 1968 (convención de Android) */
++	rdev->ops = &mt6351_rtc_ops;
++	rdev->range_min = mktime64(1968, 1, 1, 0, 0, 0);
++	rdev->range_max = mktime64(2095, 12, 31, 23, 59, 59);
++	return devm_rtc_register_device(rdev);
++}
++
++static const struct of_device_id mt6351_rtc_of_match[] = {
++	{ .compatible = "mediatek,mt6351-rtc" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, mt6351_rtc_of_match);
++
++static struct platform_driver mt6351_rtc_driver = {
++	.driver = {
++		.name = "mt6351-rtc",
++		.of_match_table = mt6351_rtc_of_match,
++	},
++	.probe = mt6351_rtc_probe,
++};
++module_platform_driver(mt6351_rtc_driver);
++
++MODULE_DESCRIPTION("RTC del PMIC MT6351");
++MODULE_LICENSE("GPL");

@@ -1,0 +1,650 @@
+From aba48717cf1a205c98fe77a832b0a98f108ec60d Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 00:20:04 +0200
+Subject: [PATCH 17/20] Bluetooth: add MT6797 CONNSYS (STP) driver
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/bluetooth/Kconfig           |   8 +
+ drivers/bluetooth/Makefile          |   1 +
+ drivers/bluetooth/btmt6797-compat.h |  40 +++
+ drivers/bluetooth/btmt6797-h4.h     |  85 ++++++
+ drivers/bluetooth/btmt6797.c        | 405 ++++++++++++++++++++++++++++
+ drivers/bluetooth/btmt6797.rst      |  46 ++++
+ 6 files changed, 585 insertions(+)
+ create mode 100644 drivers/bluetooth/btmt6797-compat.h
+ create mode 100644 drivers/bluetooth/btmt6797-h4.h
+ create mode 100644 drivers/bluetooth/btmt6797.c
+ create mode 100644 drivers/bluetooth/btmt6797.rst
+
+diff --git a/drivers/bluetooth/Kconfig b/drivers/bluetooth/Kconfig
+index 4e8c24d75..36329ed15 100644
+--- a/drivers/bluetooth/Kconfig
++++ b/drivers/bluetooth/Kconfig
+@@ -3,6 +3,14 @@
+ menu "Bluetooth device drivers"
+ 	depends on BT
+ 
++config BT_MT6797
++	tristate "MediaTek MT6797 Bluetooth over BTIF/STP/WMT"
++	depends on OF && MTK_MT6797_WMT
++	help
++	  Standard Bluetooth HCI for the integrated MT6797/MT6631 connectivity
++	  block. Uses the shared WMT firmware, BTIF transport and reliable STP
++	  BT task while preserving independent WLAN ownership.
++
+ config BT_INTEL
+ 	tristate
+ 	select REGMAP
+diff --git a/drivers/bluetooth/Makefile b/drivers/bluetooth/Makefile
+index bafc26250..e36511165 100644
+--- a/drivers/bluetooth/Makefile
++++ b/drivers/bluetooth/Makefile
+@@ -25,6 +25,7 @@ obj-$(CONFIG_BT_BCM)		+= btbcm.o
+ obj-$(CONFIG_BT_RTL)		+= btrtl.o
+ obj-$(CONFIG_BT_QCA)		+= btqca.o
+ obj-$(CONFIG_BT_MTK)		+= btmtk.o
++obj-$(CONFIG_BT_MT6797)		+= btmt6797.o
+ 
+ obj-$(CONFIG_BT_VIRTIO)		+= virtio_bt.o
+ obj-$(CONFIG_BT_NXPUART)	+= btnxpuart.o
+diff --git a/drivers/bluetooth/btmt6797-compat.h b/drivers/bluetooth/btmt6797-compat.h
+new file mode 100644
+index 000000000..0864417ae
+--- /dev/null
++++ b/drivers/bluetooth/btmt6797-compat.h
+@@ -0,0 +1,40 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef __BTMT6797_COMPAT_H
++#define __BTMT6797_COMPAT_H
++
++#include <linux/types.h>
++
++/* The two supplied 2016 ROMv3 releases accept the baseline LE commands but
++ * omit their command bits. They reject LE event bits above 0x1f and the
++ * mandatory Read Maximum Data Length command. Keep the standard host on the
++ * usable LE interface; software privacy/ECC do not need those controller
++ * extensions. The caller restricts this to the verified firmware versions
++ * and leaves HCI USER-channel diagnostics completely unmodified.
++ */
++static void mt6797_bt_fixup_capabilities(u8 *event, size_t length)
++{
++	u16 opcode;
++	u8 *commands;
++
++	if (length < 6 || event[0] != 0x0e || event[1] + 2U != length || event[5])
++		return;
++	opcode = event[3] | (event[4] << 8);
++	if (opcode == 0x1002 && length == 70) {
++		commands = event + 6;
++		commands[25] |= 0xf7;
++		commands[26] |= 0xff;
++		commands[27] |= 0xff;
++		commands[28] |= 0x0f;
++		/* These ECC completions cannot be enabled in the LE event mask.
++		 * The standard host can compute P-256/DHKey in software instead.
++		 */
++		commands[34] &= ~0x06;
++	} else if (opcode == 0x2003 && length == 14) {
++		/* DLE, LL privacy and extended scanner policy require the missing
++		 * event interface. Do not advertise working host support for them.
++		 */
++		event[6] &= ~0xe0;
++	}
++}
++
++#endif
+diff --git a/drivers/bluetooth/btmt6797-h4.h b/drivers/bluetooth/btmt6797-h4.h
+new file mode 100644
+index 000000000..f0a1cd68c
+--- /dev/null
++++ b/drivers/bluetooth/btmt6797-h4.h
+@@ -0,0 +1,85 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* MT6797 BSP BT task carries an H4 byte stream, not STP-sized HCI packets. */
++#ifndef __BTMT6797_H4_H
++#define __BTMT6797_H4_H
++
++#include <linux/errno.h>
++#include <linux/string.h>
++#include <linux/types.h>
++
++#define MT6797_H4_MAX_FRAME 1028
++
++struct mt6797_h4 {
++	u8 data[MT6797_H4_MAX_FRAME];
++	u16 used;
++	u16 expected;
++	u8 type;
++	u8 header;
++};
++
++static void mt6797_h4_reset(struct mt6797_h4 *rx)
++{
++	rx->used = 0;
++	rx->expected = 0;
++	rx->type = 0;
++	rx->header = 0;
++}
++
++static int mt6797_h4_feed(struct mt6797_h4 *rx, const u8 *data, size_t size,
++			  int (*emit)(void *, u8, const u8 *, size_t), void *context)
++{
++	while (size) {
++		size_t copy;
++		unsigned int payload;
++		int ret;
++
++		if (!rx->type) {
++			rx->type = *data++;
++			size--;
++			switch (rx->type) {
++			case 0x02: /* ACL: handle, little-endian 16-bit data length */
++				rx->header = 4;
++				break;
++			case 0x03: /* SCO: handle, 8-bit data length */
++				rx->header = 3;
++				break;
++			case 0x04: /* Event: event code, 8-bit parameter length */
++				rx->header = 2;
++				break;
++			default:
++				mt6797_h4_reset(rx);
++				return -EILSEQ;
++			}
++			rx->expected = rx->header;
++		}
++		copy = rx->expected - rx->used;
++		if (copy > size)
++			copy = size;
++		memcpy(rx->data + rx->used, data, copy);
++		rx->used += copy;
++		data += copy;
++		size -= copy;
++		if (rx->used < rx->expected)
++			continue;
++		if (rx->used == rx->header) {
++			if (rx->type == 0x02)
++				payload = rx->data[2] | (rx->data[3] << 8);
++			else
++				payload = rx->data[rx->header - 1];
++			if (payload > sizeof(rx->data) - rx->header) {
++				mt6797_h4_reset(rx);
++				return -EMSGSIZE;
++			}
++			rx->expected += payload;
++			if (payload)
++				continue;
++		}
++		ret = emit(context, rx->type, rx->data, rx->used);
++		mt6797_h4_reset(rx);
++		if (ret)
++			return ret;
++	}
++	return 0;
++}
++
++#endif
+diff --git a/drivers/bluetooth/btmt6797.c b/drivers/bluetooth/btmt6797.c
+new file mode 100644
+index 000000000..53c8f2cc6
+--- /dev/null
++++ b/drivers/bluetooth/btmt6797.c
+@@ -0,0 +1,405 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Native HCI consumer of the shared MT6797 BTIF/STP/WMT provider.
++ * BSP reference: conn_soc/linux/pub/stp_chrdev_bt.c, BT_TASK_INDX H4 stream.
++ */
++#include <linux/firmware.h>
++#include <linux/module.h>
++#include <linux/mt6797-stp-session.h>
++#include <linux/mt6797-wmt.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/skbuff.h>
++#include <linux/spinlock.h>
++#include <linux/workqueue.h>
++
++#include <net/bluetooth/bluetooth.h>
++#include <net/bluetooth/hci_core.h>
++
++#include "btmt6797-h4.h"
++#include "btmt6797-compat.h"
++
++#define MT6797_BT_TX_QUEUE_MAX 64
++#define MT6797_BT_NVRAM "mediatek/mt6797/BT.bin"
++
++/* BSP libbluetooth_mtk: chip 0x6797, 64-byte NVRAM record. */
++struct mt6797_bt_nvram {
++	u8 address[6];
++	u8 voice[2];
++	u8 codec[4];
++	u8 radio[6];
++	u8 sleep[7];
++	u8 feature[2];
++	u8 tx_power[3];
++	u8 coex[6];
++	u8 reserved[28];
++} __packed;
++
++struct mt6797_bt {
++	struct hci_dev *hdev;
++	struct mt6797_wmt_client *client;
++	struct sk_buff_head txq;
++	struct work_struct tx_work;
++	spinlock_t rx_lock; /* Serializes the H4 parser and close's reset. */
++	struct mt6797_h4 rx;
++	bool running;
++	bool failed;
++	bool legacy_ble;
++};
++
++static int mt6797_bt_receive_frame(void *context, u8 type,
++				   const u8 *data, size_t length)
++{
++	struct mt6797_bt *bt = context;
++	struct sk_buff *skb;
++
++	skb = bt_skb_alloc(length, GFP_ATOMIC);
++	if (!skb)
++		return -ENOMEM;
++	hci_skb_pkt_type(skb) = type;
++	skb_put_data(skb, data, length);
++	if (READ_ONCE(bt->legacy_ble) && type == HCI_EVENT_PKT &&
++	    !hci_dev_test_flag(bt->hdev, HCI_USER_CHANNEL))
++		mt6797_bt_fixup_capabilities(skb->data, skb->len);
++	return hci_recv_frame(bt->hdev, skb);
++}
++
++static void mt6797_bt_receive(void *context, const u8 *data, size_t length)
++{
++	struct mt6797_bt *bt = context;
++	unsigned long flags;
++	int ret = 0;
++
++	spin_lock_irqsave(&bt->rx_lock, flags);
++	if (READ_ONCE(bt->running) && !READ_ONCE(bt->failed)) {
++		bt->hdev->stat.byte_rx += length;
++		ret = mt6797_h4_feed(&bt->rx, data, length,
++				     mt6797_bt_receive_frame, bt);
++		if (ret) {
++			bt->hdev->stat.err_rx++;
++			WRITE_ONCE(bt->failed, true);
++		}
++	}
++	spin_unlock_irqrestore(&bt->rx_lock, flags);
++	if (ret) {
++		bt_dev_err(bt->hdev, "STP H4 receive failed: %d", ret);
++		hci_reset_dev(bt->hdev);
++	}
++}
++
++static void mt6797_bt_tx_work(struct work_struct *work)
++{
++	struct mt6797_bt *bt = container_of(work, struct mt6797_bt, tx_work);
++	struct sk_buff *skb;
++
++	while (READ_ONCE(bt->running) && !READ_ONCE(bt->failed) &&
++	       (skb = skb_dequeue(&bt->txq))) {
++		u8 packet[MT6797_H4_MAX_FRAME + 1];
++		u8 type = hci_skb_pkt_type(skb);
++		int ret;
++
++		packet[0] = type;
++		ret = skb_copy_bits(skb, 0, packet + 1, skb->len);
++		if (!ret)
++			ret = mt6797_wmt_client_send(bt->client, packet, skb->len + 1);
++		if (!ret) {
++			bt->hdev->stat.byte_tx += skb->len + 1;
++			switch (type) {
++			case HCI_COMMAND_PKT:
++				bt->hdev->stat.cmd_tx++;
++				break;
++			case HCI_ACLDATA_PKT:
++				bt->hdev->stat.acl_tx++;
++				break;
++			case HCI_SCODATA_PKT:
++				bt->hdev->stat.sco_tx++;
++				break;
++			}
++		}
++		kfree_skb(skb);
++		if (ret) {
++			bt->hdev->stat.err_tx++;
++			WRITE_ONCE(bt->failed, true);
++			bt_dev_err(bt->hdev, "STP H4 transmit failed: %d", ret);
++			skb_queue_purge(&bt->txq);
++			hci_reset_dev(bt->hdev);
++			break;
++		}
++	}
++}
++
++static int mt6797_bt_send(struct hci_dev *hdev, struct sk_buff *skb)
++{
++	struct mt6797_bt *bt = hci_get_drvdata(hdev);
++	unsigned long flags;
++	int ret = 0;
++
++	switch (hci_skb_pkt_type(skb)) {
++	case HCI_COMMAND_PKT:
++	case HCI_ACLDATA_PKT:
++	case HCI_SCODATA_PKT:
++		break;
++	default:
++		return -EILSEQ;
++	}
++	if (!skb->len || skb->len > MT6797_H4_MAX_FRAME)
++		return -EMSGSIZE;
++	spin_lock_irqsave(&bt->txq.lock, flags);
++	if (!READ_ONCE(bt->running) || READ_ONCE(bt->failed)) {
++		ret = -ESHUTDOWN;
++	} else if (bt->txq.qlen >= MT6797_BT_TX_QUEUE_MAX) {
++		ret = -ENOSPC;
++	} else {
++		__skb_queue_tail(&bt->txq, skb);
++		schedule_work(&bt->tx_work);
++	}
++	spin_unlock_irqrestore(&bt->txq.lock, flags);
++	return ret;
++}
++
++static int mt6797_bt_open(struct hci_dev *hdev)
++{
++	struct mt6797_bt *bt = hci_get_drvdata(hdev);
++	unsigned long flags;
++	int ret;
++
++	spin_lock_irqsave(&bt->rx_lock, flags);
++	mt6797_h4_reset(&bt->rx);
++	WRITE_ONCE(bt->failed, false);
++	WRITE_ONCE(bt->legacy_ble, false);
++	WRITE_ONCE(bt->running, true);
++	spin_unlock_irqrestore(&bt->rx_lock, flags);
++	ret = mt6797_wmt_client_open(bt->client);
++	if (ret)
++		WRITE_ONCE(bt->running, false);
++	return ret;
++}
++
++static int mt6797_bt_flush(struct hci_dev *hdev)
++{
++	struct mt6797_bt *bt = hci_get_drvdata(hdev);
++
++	skb_queue_purge(&bt->txq);
++	return 0;
++}
++
++static int mt6797_bt_close(struct hci_dev *hdev)
++{
++	struct mt6797_bt *bt = hci_get_drvdata(hdev);
++	unsigned long flags;
++	int ret;
++
++	/* Lock against send's enqueue before cancelling the final TX work. */
++	spin_lock_irqsave(&bt->txq.lock, flags);
++	WRITE_ONCE(bt->running, false);
++	spin_unlock_irqrestore(&bt->txq.lock, flags);
++	cancel_work_sync(&bt->tx_work);
++	skb_queue_purge(&bt->txq);
++	ret = mt6797_wmt_client_close(bt->client);
++	spin_lock_irqsave(&bt->rx_lock, flags);
++	mt6797_h4_reset(&bt->rx);
++	spin_unlock_irqrestore(&bt->rx_lock, flags);
++	return ret;
++}
++
++static int mt6797_bt_command(struct hci_dev *hdev, u16 opcode, u8 length,
++			     const void *parameters)
++{
++	struct sk_buff *skb;
++	int ret;
++
++	skb = __hci_cmd_sync(hdev, opcode, length, parameters, HCI_INIT_TIMEOUT);
++	if (IS_ERR(skb))
++		return PTR_ERR(skb);
++	ret = skb->len ? -bt_to_errno(skb->data[0]) : -EPROTO;
++	kfree_skb(skb);
++	if (ret)
++		bt_dev_err(hdev, "BSP command 0x%04x failed: %d", opcode, ret);
++	return ret;
++}
++
++static int mt6797_bt_set_bdaddr(struct hci_dev *hdev, const bdaddr_t *address)
++{
++	return mt6797_bt_command(hdev, 0xfc1a, sizeof(*address), address);
++}
++
++static bool mt6797_bt_valid_address(const bdaddr_t *address)
++{
++	static const bdaddr_t bsp_default = {{ 0x01, 0x79, 0x02, 0x46, 0x00, 0x00 }};
++
++	return bacmp(address, BDADDR_ANY) && bacmp(address, BDADDR_NONE) &&
++	       bacmp(address, &bsp_default);
++}
++
++static int mt6797_bt_setup(struct hci_dev *hdev)
++{
++	struct mt6797_bt *bt = hci_get_drvdata(hdev);
++	const struct mt6797_bt_nvram *nvram;
++	struct hci_rp_read_local_version *version;
++	struct hci_rp_read_bd_addr *rp;
++	const struct firmware *fw;
++	struct sk_buff *skb;
++	u8 log_enable = 0;
++	bdaddr_t address;
++	bdaddr_t configured;
++	int ret;
++
++	ret = request_firmware(&fw, MT6797_BT_NVRAM, &hdev->dev);
++	if (ret)
++		return ret;
++	if (fw->size != sizeof(*nvram)) {
++		ret = -EINVAL;
++		goto release;
++	}
++	nvram = (const void *)fw->data;
++	/* BSP preload script reads the controller's address before programming it.
++	 * Preserve its eFuse address: the fallback record is not factory identity.
++	 * Board-specific public addresses can use the standard MGMT configuration.
++	 */
++	skb = __hci_cmd_sync(hdev, HCI_OP_READ_BD_ADDR, 0, NULL, HCI_INIT_TIMEOUT);
++	if (IS_ERR(skb)) {
++		ret = PTR_ERR(skb);
++		goto release;
++	}
++	if (skb->len != sizeof(*rp)) {
++		ret = -EPROTO;
++	} else {
++		rp = (void *)skb->data;
++		ret = -bt_to_errno(rp->status);
++		bacpy(&address, &rp->bdaddr);
++	}
++	kfree_skb(skb);
++	if (ret)
++		goto release;
++	baswap(&configured, (const bdaddr_t *)nvram->address);
++	if (mt6797_bt_valid_address(&configured))
++		bacpy(&address, &configured);
++	if (!mt6797_bt_valid_address(&address)) {
++		hci_set_quirk(hdev, HCI_QUIRK_INVALID_BDADDR);
++		bt_dev_warn(hdev, "controller needs a board-specific public address");
++	} else {
++		ret = mt6797_bt_set_bdaddr(hdev, &address);
++		if (ret)
++			goto release;
++	}
++	/* Exact conn_soc preload sequence, not the newer UART/USB protocol. */
++	ret = mt6797_bt_command(hdev, 0xfc79, sizeof(nvram->radio), nvram->radio);
++	if (ret)
++		goto release;
++	ret = mt6797_bt_command(hdev, 0xfc93, sizeof(nvram->tx_power), nvram->tx_power);
++	if (ret)
++		goto release;
++	ret = mt6797_bt_command(hdev, 0xfc7a, sizeof(nvram->sleep), nvram->sleep);
++	if (ret)
++		goto release;
++	ret = mt6797_bt_command(hdev, HCI_OP_RESET, 0, NULL);
++	if (ret)
++		goto release;
++	ret = mt6797_bt_command(hdev, 0xfcbe, sizeof(log_enable), &log_enable);
++	if (ret)
++		goto release;
++	skb = __hci_cmd_sync(hdev, HCI_OP_READ_LOCAL_VERSION, 0, NULL, HCI_INIT_TIMEOUT);
++	if (IS_ERR(skb)) {
++		ret = PTR_ERR(skb);
++		goto release;
++	}
++	if (skb->len != sizeof(*version)) {
++		ret = -EPROTO;
++	} else {
++		version = (void *)skb->data;
++		ret = -bt_to_errno(version->status);
++		/* E-PAD: el firmware de 2017 de la E-PAD tiene las mismas carencias LE que los de 2016. */
++		bt_dev_info(hdev, "HCI %u rev 0x%04x, LMP subver 0x%04x, fabricante %u", version->hci_ver,
++			    le16_to_cpu(version->hci_rev), le16_to_cpu(version->lmp_subver),
++			    le16_to_cpu(version->manufacturer));
++		WRITE_ONCE(bt->legacy_ble, !ret && version->hci_ver == 8 &&
++			   le16_to_cpu(version->manufacturer) == 70);
++	}
++	kfree_skb(skb);
++	if (!ret) {
++		bt_dev_info(hdev, "BSP MT6797 radio/power/sleep setup complete");
++		if (READ_ONCE(bt->legacy_ble)) {
++			/* Advertised MWS query returns Unknown Connection Identifier. */
++			hci_set_quirk(hdev, HCI_QUIRK_BROKEN_MWS_TRANSPORT_CONFIG);
++			bt_dev_warn(hdev, "2016 firmware BLE event compatibility: controller DLE/privacy/ECC unavailable");
++		}
++	}
++release:
++	release_firmware(fw);
++	return ret;
++}
++
++static int mt6797_bt_probe(struct platform_device *pdev)
++{
++	static const struct mt6797_wmt_client_ops ops = {
++		.receive = mt6797_bt_receive,
++	};
++	struct mt6797_bt *bt;
++	struct hci_dev *hdev;
++	int ret;
++
++	bt = devm_kzalloc(&pdev->dev, sizeof(*bt), GFP_KERNEL);
++	if (!bt)
++		return -ENOMEM;
++	hdev = hci_alloc_dev();
++	if (!hdev)
++		return -ENOMEM;
++	bt->hdev = hdev;
++	skb_queue_head_init(&bt->txq);
++	spin_lock_init(&bt->rx_lock);
++	INIT_WORK(&bt->tx_work, mt6797_bt_tx_work);
++	bt->client = mt6797_wmt_client_get(&pdev->dev, MT6797_STP_TASK_BT, &ops, bt);
++	if (IS_ERR(bt->client)) {
++		ret = PTR_ERR(bt->client);
++		goto free_hdev;
++	}
++	/* BTIF is an SoC interprocessor H4/STP link, not an exposed UART. */
++	hdev->bus = HCI_IPC;
++	hdev->open = mt6797_bt_open;
++	hdev->close = mt6797_bt_close;
++	hdev->flush = mt6797_bt_flush;
++	hdev->send = mt6797_bt_send;
++	hdev->setup = mt6797_bt_setup;
++	hdev->set_bdaddr = mt6797_bt_set_bdaddr;
++	hci_set_quirk(hdev, HCI_QUIRK_NON_PERSISTENT_SETUP);
++	hci_set_drvdata(hdev, bt);
++	SET_HCIDEV_DEV(hdev, &pdev->dev);
++	platform_set_drvdata(pdev, bt);
++	ret = hci_register_dev(hdev);
++	if (!ret)
++		return 0;
++	mt6797_wmt_client_put(bt->client);
++free_hdev:
++	hci_free_dev(hdev);
++	return dev_err_probe(&pdev->dev, ret, "cannot register STP Bluetooth HCI\n");
++}
++
++static void mt6797_bt_remove(struct platform_device *pdev)
++{
++	struct mt6797_bt *bt = platform_get_drvdata(pdev);
++
++	hci_unregister_dev(bt->hdev);
++	cancel_work_sync(&bt->tx_work);
++	skb_queue_purge(&bt->txq);
++	mt6797_wmt_client_put(bt->client);
++	hci_free_dev(bt->hdev);
++}
++
++static const struct of_device_id mt6797_bt_of_match[] = {
++	{ .compatible = "mediatek,mt6797-bluetooth" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, mt6797_bt_of_match);
++
++static struct platform_driver mt6797_bt_driver = {
++	.probe = mt6797_bt_probe,
++	.remove = mt6797_bt_remove,
++	.driver = {
++		.name = "mt6797-bluetooth",
++		.of_match_table = mt6797_bt_of_match,
++	},
++};
++module_platform_driver(mt6797_bt_driver);
++
++MODULE_DESCRIPTION("MediaTek MT6797 Bluetooth HCI over shared BTIF/STP/WMT");
++MODULE_LICENSE("GPL");
++MODULE_FIRMWARE(MT6797_BT_NVRAM);
+diff --git a/drivers/bluetooth/btmt6797.rst b/drivers/bluetooth/btmt6797.rst
+new file mode 100644
+index 000000000..4cfc7ac8b
+--- /dev/null
++++ b/drivers/bluetooth/btmt6797.rst
+@@ -0,0 +1,46 @@
++MT6797 shared-STP Bluetooth
++==========================
++
++The platform HCI consumer uses the BT task of the shared WMT provider. WMT
++owns BTIF, STP, the ROMv3 patch pair, RF calibration and connectivity power.
++Opening Bluetooth enables its function/VCN33 reference; closing it must not
++shut down an active Wi-Fi client. TX runs outside the receive callback to
++avoid waiting for an STP ACK on the STP receive worker. H4 parsing preserves
++fragment boundaries and accepts coalesced events, ACL and SCO packets.
++
++The BSP ``sla/vendor/amt/libs/mt6797_64/libbluetooth_mtk`` preload script
++(``bt_init_preload_script_consys``) reads the address, sets it with 0xfc1a,
++sets radio (0xfc79, 6 bytes), TX offsets (0xfc93, 3 bytes), sleep (0xfc7a,
++7 bytes), resets HCI and disables firmware syslog (0xfcbe, 1 byte). The
++driver checks status and response lengths rather than just transport ACKs.
++The 64-byte ``mediatek/mt6797/BT.bin`` has the BSP NVRAM layout, not a ROM
++patch header. The official fallback is not board factory calibration.
++Unique record/controller addresses are retained; zero, all-ones and the
++BSP placeholder 00:00:46:02:79:01 require standard MGMT public-address
++configuration. No address is written back to storage. Function-off loses
++setup, so HCI_QUIRK_NON_PERSISTENT_SETUP replays it on each open.
++
++Checkpoint 2026-10-17: complete ARM64 modules and selected X20 DT build;
++actual H4 parser tests under ASAN/UBSAN; board BSP vendor setup/standard
++Reset, version/address, command/feature/buffer queries with no H4 errors.
++The June-2016 ROMv3 patch reports
++BLE 4.2 features while rejecting event-mask bits above 0x1f, and omits BLE
++baseline commands from its supported-command bitmap despite accepting
++several of them. The January-2016 BSP patch pair reproduces the same raw
++capability inconsistency. Both reject Read Maximum Data Length (0x202f).
++The adapter now corrects baseline LE command bits and withholds controller
++DLE/privacy/extended-scan and ECC-offload capabilities whose required events
++cannot be enabled. This is restricted to the two measured version tuples;
++HCI USER-channel diagnostics retain the raw firmware replies. Software
++privacy/ECC remain available in the standard host, subject to actual tests.
++The falsely advertised MWS query also needs the existing kernel quirk.
++
++With these compatibility rules, standard MGMT public-address configuration,
++SSP/LE/bondable settings and power-on pass. AES/CMAC modules must be loaded
++before opening the adapter for SMP. The test public address is explicitly a
++temporary lab identity, not a recovered factory address. Fast function
++off/on while WLAN is active still times out and stalls shared firmware;
++BTIF wake alone was a negative control. No scan, advertising, pairing,
++ACL/GATT traffic, coexistence recovery or PM acceptance is claimed yet.
++Full BSP 4.2 optional capabilities remain an explicit gap, not a completed
++feature after the compatibility correction.

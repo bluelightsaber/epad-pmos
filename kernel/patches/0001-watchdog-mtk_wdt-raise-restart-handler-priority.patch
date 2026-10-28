@@ -1,0 +1,24 @@
+From 9512ae3e9a12a232cd002ef55cbdfcf8a59da728 Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 00:19:59 +0200
+Subject: [PATCH 01/20] watchdog: mtk_wdt: raise restart handler priority
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/watchdog/mtk_wdt.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/watchdog/mtk_wdt.c b/drivers/watchdog/mtk_wdt.c
+index 91d110646..ab480e60a 100644
+--- a/drivers/watchdog/mtk_wdt.c
++++ b/drivers/watchdog/mtk_wdt.c
+@@ -436,7 +436,8 @@ static int mtk_wdt_probe(struct platform_device *pdev)
+ 
+ 	watchdog_init_timeout(&mtk_wdt->wdt_dev, timeout, dev);
+ 	watchdog_set_nowayout(&mtk_wdt->wdt_dev, nowayout);
+-	watchdog_set_restart_priority(&mtk_wdt->wdt_dev, 128);
++	/* E-PAD: el SYSTEM_RESET de PSCI (prioridad 129) se cuelga en el ATF del MT6797 → usar antes el watchdog */
++	watchdog_set_restart_priority(&mtk_wdt->wdt_dev, 192);
+ 
+ 	watchdog_set_drvdata(&mtk_wdt->wdt_dev, mtk_wdt);
+ 

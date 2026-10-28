@@ -1,0 +1,11 @@
+--- a/base/input/input.c
++++ b/base/input/input.c
+@@ -68,6 +68,8 @@
+ #    include "input-sony-prstux.h"
+ #elif defined(CERVANTES)
+ #    include "input-cervantes.h"
++#elif defined(EPAD)
++#    include "input-epad.h"
+ #endif
+ 
+ // NOTE: Legacy Kindle systems are too old to support timerfd (and we don't really need it there anyway).
