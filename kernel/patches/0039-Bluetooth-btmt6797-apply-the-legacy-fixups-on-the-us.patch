@@ -1,0 +1,60 @@
+From 3bbf335c943a1a6cce3cb0bf869e9d36451bb991 Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Mon, 2 Nov 2026 17:53:09 +0100
+Subject: [PATCH 39/51] Bluetooth: btmt6797: apply the legacy fixups on the
+ user channel too
+
+Android drives the controller through HCI_CHANNEL_USER and aborts when
+Read Default Erroneous Data Reporting, advertised by the 2016/2017
+firmware, is answered with Unknown HCI Command.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/bluetooth/btmt6797-compat.h | 9 +++++++--
+ drivers/bluetooth/btmt6797.c        | 3 +--
+ 2 files changed, 8 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/bluetooth/btmt6797-compat.h b/drivers/bluetooth/btmt6797-compat.h
+index 0864417ae7ff..6ae4a2f96b1a 100644
+--- a/drivers/bluetooth/btmt6797-compat.h
++++ b/drivers/bluetooth/btmt6797-compat.h
+@@ -8,8 +8,9 @@
+  * omit their command bits. They reject LE event bits above 0x1f and the
+  * mandatory Read Maximum Data Length command. Keep the standard host on the
+  * usable LE interface; software privacy/ECC do not need those controller
+- * extensions. The caller restricts this to the verified firmware versions
+- * and leaves HCI USER-channel diagnostics completely unmodified.
++ * extensions. The caller restricts this to the verified firmware versions.
++ * It also applies to the HCI USER channel: Android's stack drives the
++ * controller through it and has no kernel quirks of its own.
+  */
+ static void mt6797_bt_fixup_capabilities(u8 *event, size_t length)
+ {
+@@ -29,6 +30,10 @@ static void mt6797_bt_fixup_capabilities(u8 *event, size_t length)
+ 		 * The standard host can compute P-256/DHKey in software instead.
+ 		 */
+ 		commands[34] &= ~0x06;
++		/* Read/Write Default Erroneous Data Reporting are advertised but
++		 * answered with Unknown HCI Command, which aborts Android's stack.
++		 */
++		commands[18] &= ~0x0c;
+ 	} else if (opcode == 0x2003 && length == 14) {
+ 		/* DLE, LL privacy and extended scanner policy require the missing
+ 		 * event interface. Do not advertise working host support for them.
+diff --git a/drivers/bluetooth/btmt6797.c b/drivers/bluetooth/btmt6797.c
+index 53c8f2cc6e83..c5e747165ed6 100644
+--- a/drivers/bluetooth/btmt6797.c
++++ b/drivers/bluetooth/btmt6797.c
+@@ -57,8 +57,7 @@ static int mt6797_bt_receive_frame(void *context, u8 type,
+ 		return -ENOMEM;
+ 	hci_skb_pkt_type(skb) = type;
+ 	skb_put_data(skb, data, length);
+-	if (READ_ONCE(bt->legacy_ble) && type == HCI_EVENT_PKT &&
+-	    !hci_dev_test_flag(bt->hdev, HCI_USER_CHANNEL))
++	if (READ_ONCE(bt->legacy_ble) && type == HCI_EVENT_PKT)
+ 		mt6797_bt_fixup_capabilities(skb->data, skb->len);
+ 	return hci_recv_frame(bt->hdev, skb);
+ }
+-- 
+2.53.0
+

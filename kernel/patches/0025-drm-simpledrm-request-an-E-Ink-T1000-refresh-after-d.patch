@@ -1,0 +1,79 @@
+From f8b48c91daf8982c32b96a9f74600646ebd8dbe8 Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Sat, 31 Oct 2026 21:49:42 +0100
+Subject: [PATCH 25/51] drm/simpledrm: request an E Ink T1000 refresh after
+ damaged updates
+
+The T1000 controller only updates the panel when told to. No-op without it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/gpu/drm/sysfb/simpledrm.c | 24 +++++++++++++++++++++++-
+ include/linux/eink-t1000.h        | 12 ++++++++++++
+ 2 files changed, 35 insertions(+), 1 deletion(-)
+ create mode 100644 include/linux/eink-t1000.h
+
+diff --git a/drivers/gpu/drm/sysfb/simpledrm.c b/drivers/gpu/drm/sysfb/simpledrm.c
+index ca8a8d86094e..14e17c47fd96 100644
+--- a/drivers/gpu/drm/sysfb/simpledrm.c
++++ b/drivers/gpu/drm/sysfb/simpledrm.c
+@@ -2,6 +2,7 @@
+ 
+ #include <linux/aperture.h>
+ #include <linux/clk.h>
++#include <linux/eink-t1000.h>
+ #include <linux/minmax.h>
+ #include <linux/of_address.h>
+ #include <linux/of_clk.h>
+@@ -579,8 +580,29 @@ static const u64 simpledrm_primary_plane_format_modifiers[] = {
+ 	DRM_SYSFB_PLANE_FORMAT_MODIFIERS,
+ };
+ 
++/*
++ * E-PAD: el controlador E-Ink T1000 solo pinta cuando se le ordena; tras copiar al framebuffer, pedirle un
++ * refresco si hubo daño (no hace nada sin T1000).
++ */
++static void simpledrm_primary_plane_helper_atomic_update(struct drm_plane *plane,
++							 struct drm_atomic_commit *state)
++{
++	struct drm_plane_state *old_plane_state = drm_atomic_get_old_plane_state(state, plane);
++	struct drm_plane_state *plane_state = drm_atomic_get_new_plane_state(state, plane);
++	struct drm_rect damage;
++
++	drm_sysfb_plane_helper_atomic_update(plane, state);
++	if (drm_atomic_helper_damage_merged(old_plane_state, plane_state, &damage))
++		t1000_request_refresh();
++}
++
+ static const struct drm_plane_helper_funcs simpledrm_primary_plane_helper_funcs = {
+-	DRM_SYSFB_PLANE_HELPER_FUNCS,
++	.begin_fb_access = drm_sysfb_plane_helper_begin_fb_access,
++	.end_fb_access = drm_gem_end_shadow_fb_access,
++	.atomic_check = drm_sysfb_plane_helper_atomic_check,
++	.atomic_update = simpledrm_primary_plane_helper_atomic_update,
++	.atomic_disable = drm_sysfb_plane_helper_atomic_disable,
++	.get_scanout_buffer = drm_sysfb_plane_helper_get_scanout_buffer,
+ };
+ 
+ static const struct drm_plane_funcs simpledrm_primary_plane_funcs = {
+diff --git a/include/linux/eink-t1000.h b/include/linux/eink-t1000.h
+new file mode 100644
+index 000000000000..1b4e2012bc5d
+--- /dev/null
++++ b/include/linux/eink-t1000.h
+@@ -0,0 +1,12 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/* Controlador E-Ink T1000 de la E-PAD: refresco tras actualizar el framebuffer (drivers/misc/eink-t1000.c). */
++#ifndef _LINUX_EINK_T1000_H
++#define _LINUX_EINK_T1000_H
++
++#if IS_REACHABLE(CONFIG_EINK_T1000)
++void t1000_request_refresh(void);
++#else
++static inline void t1000_request_refresh(void) { }
++#endif
++
++#endif
+-- 
+2.53.0
+

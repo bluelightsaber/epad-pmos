@@ -1,7 +1,7 @@
 From d383140f443c9b23cbaeebd4d8182cac716c3aa4 Mon Sep 17 00:00:00 2001
 From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
 Date: Fri, 23 Oct 2026 00:20:04 +0200
-Subject: [PATCH 16/20] soc: mediatek: MT6797 SPM, MT6351 PMIC interrupts and
+Subject: [PATCH 16/51] soc: mediatek: MT6797 SPM, MT6351 PMIC interrupts and
  CONNSYS (WMT/STP/BTIF/WLAN HIF)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -45,7 +45,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  create mode 100644 include/linux/mt6797-wmt.h
 
 diff --git a/drivers/soc/mediatek/Kconfig b/drivers/soc/mediatek/Kconfig
-index d7293977f..e1e052a4c 100644
+index d7293977f06e..e1e052a4c855 100644
 --- a/drivers/soc/mediatek/Kconfig
 +++ b/drivers/soc/mediatek/Kconfig
 @@ -45,6 +45,19 @@ config MTK_INFRACFG
@@ -154,7 +154,7 @@ index d7293977f..e1e052a4c 100644
 +
  endmenu
 diff --git a/drivers/soc/mediatek/Makefile b/drivers/soc/mediatek/Makefile
-index 0665573e3..5c0a2f4e5 100644
+index 0665573e3c4b..5c0a2f4e5ff8 100644
 --- a/drivers/soc/mediatek/Makefile
 +++ b/drivers/soc/mediatek/Makefile
 @@ -4,8 +4,18 @@ obj-$(CONFIG_MTK_DEVAPC) += mtk-devapc.o
@@ -178,7 +178,7 @@ index 0665573e3..5c0a2f4e5 100644
 +obj-$(CONFIG_MTK_MT6351_IRQ) += mt6351-irq.o
 diff --git a/drivers/soc/mediatek/mt6351-irq.c b/drivers/soc/mediatek/mt6351-irq.c
 new file mode 100644
-index 000000000..d91a99363
+index 000000000000..d91a99363659
 --- /dev/null
 +++ b/drivers/soc/mediatek/mt6351-irq.c
 @@ -0,0 +1,170 @@
@@ -354,7 +354,7 @@ index 000000000..d91a99363
 +MODULE_LICENSE("GPL");
 diff --git a/drivers/soc/mediatek/mt6797-btif-ring.h b/drivers/soc/mediatek/mt6797-btif-ring.h
 new file mode 100644
-index 000000000..5b9d24d1a
+index 000000000000..5b9d24d1a242
 --- /dev/null
 +++ b/drivers/soc/mediatek/mt6797-btif-ring.h
 @@ -0,0 +1,33 @@
@@ -393,7 +393,7 @@ index 000000000..5b9d24d1a
 +#endif
 diff --git a/drivers/soc/mediatek/mt6797-btif.c b/drivers/soc/mediatek/mt6797-btif.c
 new file mode 100644
-index 000000000..ecc7e21f0
+index 000000000000..ecc7e21f05b8
 --- /dev/null
 +++ b/drivers/soc/mediatek/mt6797-btif.c
 @@ -0,0 +1,898 @@
@@ -1297,7 +1297,7 @@ index 000000000..ecc7e21f0
 +MODULE_LICENSE("GPL");
 diff --git a/drivers/soc/mediatek/mt6797-consys.c b/drivers/soc/mediatek/mt6797-consys.c
 new file mode 100644
-index 000000000..b9cef05a3
+index 000000000000..b9cef05a30f1
 --- /dev/null
 +++ b/drivers/soc/mediatek/mt6797-consys.c
 @@ -0,0 +1,1117 @@
@@ -2420,7 +2420,7 @@ index 000000000..b9cef05a3
 +MODULE_LICENSE("GPL");
 diff --git a/drivers/soc/mediatek/mt6797-spm.c b/drivers/soc/mediatek/mt6797-spm.c
 new file mode 100644
-index 000000000..d9585ed0d
+index 000000000000..d9585ed0d280
 --- /dev/null
 +++ b/drivers/soc/mediatek/mt6797-spm.c
 @@ -0,0 +1,1462 @@
@@ -3888,7 +3888,7 @@ index 000000000..d9585ed0d
 +builtin_platform_driver(mt6797_spm_driver);
 diff --git a/drivers/soc/mediatek/mt6797-stp-diag.c b/drivers/soc/mediatek/mt6797-stp-diag.c
 new file mode 100644
-index 000000000..868961350
+index 000000000000..868961350db0
 --- /dev/null
 +++ b/drivers/soc/mediatek/mt6797-stp-diag.c
 @@ -0,0 +1,635 @@
@@ -4529,7 +4529,7 @@ index 000000000..868961350
 +MODULE_LICENSE("GPL");
 diff --git a/drivers/soc/mediatek/mt6797-stp-session.c b/drivers/soc/mediatek/mt6797-stp-session.c
 new file mode 100644
-index 000000000..7f4700987
+index 000000000000..7f4700987faf
 --- /dev/null
 +++ b/drivers/soc/mediatek/mt6797-stp-session.c
 @@ -0,0 +1,1013 @@
@@ -5548,7 +5548,7 @@ index 000000000..7f4700987
 +MODULE_LICENSE("GPL");
 diff --git a/drivers/soc/mediatek/mt6797-stp.c b/drivers/soc/mediatek/mt6797-stp.c
 new file mode 100644
-index 000000000..e6ca04889
+index 000000000000..e6ca04889215
 --- /dev/null
 +++ b/drivers/soc/mediatek/mt6797-stp.c
 @@ -0,0 +1,269 @@
@@ -5823,7 +5823,7 @@ index 000000000..e6ca04889
 +MODULE_LICENSE("GPL");
 diff --git a/drivers/soc/mediatek/mt6797-wlan-hif.c b/drivers/soc/mediatek/mt6797-wlan-hif.c
 new file mode 100644
-index 000000000..17973386d
+index 000000000000..17973386db3e
 --- /dev/null
 +++ b/drivers/soc/mediatek/mt6797-wlan-hif.c
 @@ -0,0 +1,784 @@
@@ -6613,7 +6613,7 @@ index 000000000..17973386d
 +MODULE_LICENSE("GPL");
 diff --git a/drivers/soc/mediatek/mt6797-wmt-init.c b/drivers/soc/mediatek/mt6797-wmt-init.c
 new file mode 100644
-index 000000000..53327dd66
+index 000000000000..53327dd66366
 --- /dev/null
 +++ b/drivers/soc/mediatek/mt6797-wmt-init.c
 @@ -0,0 +1,569 @@
@@ -7188,7 +7188,7 @@ index 000000000..53327dd66
 +MODULE_LICENSE("GPL");
 diff --git a/drivers/soc/mediatek/mt6797-wmt.c b/drivers/soc/mediatek/mt6797-wmt.c
 new file mode 100644
-index 000000000..3074a9373
+index 000000000000..3074a937372d
 --- /dev/null
 +++ b/drivers/soc/mediatek/mt6797-wmt.c
 @@ -0,0 +1,908 @@
@@ -8102,7 +8102,7 @@ index 000000000..3074a9373
 +MODULE_LICENSE("GPL");
 diff --git a/include/linux/mt6797-btif.h b/include/linux/mt6797-btif.h
 new file mode 100644
-index 000000000..3cd2be30b
+index 000000000000..3cd2be30bafe
 --- /dev/null
 +++ b/include/linux/mt6797-btif.h
 @@ -0,0 +1,29 @@
@@ -8137,7 +8137,7 @@ index 000000000..3cd2be30b
 +#endif /* __LINUX_MT6797_BTIF_H */
 diff --git a/include/linux/mt6797-consys.h b/include/linux/mt6797-consys.h
 new file mode 100644
-index 000000000..157fe9831
+index 000000000000..157fe9831c89
 --- /dev/null
 +++ b/include/linux/mt6797-consys.h
 @@ -0,0 +1,58 @@
@@ -8201,7 +8201,7 @@ index 000000000..157fe9831
 +#endif /* __LINUX_MT6797_CONSYS_H */
 diff --git a/include/linux/mt6797-stp-session.h b/include/linux/mt6797-stp-session.h
 new file mode 100644
-index 000000000..6445ba6d1
+index 000000000000..6445ba6d1717
 --- /dev/null
 +++ b/include/linux/mt6797-stp-session.h
 @@ -0,0 +1,87 @@
@@ -8294,7 +8294,7 @@ index 000000000..6445ba6d1
 +#endif /* __LINUX_MT6797_STP_SESSION_H */
 diff --git a/include/linux/mt6797-stp.h b/include/linux/mt6797-stp.h
 new file mode 100644
-index 000000000..873636556
+index 000000000000..87363655687f
 --- /dev/null
 +++ b/include/linux/mt6797-stp.h
 @@ -0,0 +1,57 @@
@@ -8357,7 +8357,7 @@ index 000000000..873636556
 +#endif /* __LINUX_MT6797_STP_H */
 diff --git a/include/linux/mt6797-wlan-hif.h b/include/linux/mt6797-wlan-hif.h
 new file mode 100644
-index 000000000..2cf0b685c
+index 000000000000..2cf0b685c1d4
 --- /dev/null
 +++ b/include/linux/mt6797-wlan-hif.h
 @@ -0,0 +1,42 @@
@@ -8405,7 +8405,7 @@ index 000000000..2cf0b685c
 +#endif /* __LINUX_MT6797_WLAN_HIF_H */
 diff --git a/include/linux/mt6797-wmt.h b/include/linux/mt6797-wmt.h
 new file mode 100644
-index 000000000..e80db0a3a
+index 000000000000..e80db0a3ae25
 --- /dev/null
 +++ b/include/linux/mt6797-wmt.h
 @@ -0,0 +1,63 @@
@@ -8472,3 +8472,6 @@ index 000000000..e80db0a3a
 +			      struct mt6797_wmt_calibration *calibration);
 +
 +#endif
+-- 
+2.53.0
+

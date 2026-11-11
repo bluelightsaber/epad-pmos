@@ -1,7 +1,7 @@
 From 5d75a7f13a5ee96fe94a920d8a951e4c4adc03e7 Mon Sep 17 00:00:00 2001
 From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
 Date: Sat, 24 Oct 2026 02:16:19 +0200
-Subject: [PATCH 19/20] Input: add MediaTek MT6351 PMIC power key driver
+Subject: [PATCH 19/51] Input: add MediaTek MT6351 PMIC power key driver
 
 The MT6351 raises separate PWRKEY (press) and PWRKEY_R (release)
 interrupts. gpio-keys on the press interrupt alone has to emulate the
@@ -16,7 +16,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  create mode 100644 drivers/input/misc/mt6351-pwrkey.c
 
 diff --git a/drivers/input/misc/Kconfig b/drivers/input/misc/Kconfig
-index 1f6c57dba..deaffac71 100644
+index 1f6c57dba030..deaffac7162a 100644
 --- a/drivers/input/misc/Kconfig
 +++ b/drivers/input/misc/Kconfig
 @@ -337,6 +337,13 @@ config INPUT_APANEL
@@ -34,7 +34,7 @@ index 1f6c57dba..deaffac71 100644
  	tristate "Generic GPIO Beeper support"
  	depends on GPIOLIB || COMPILE_TEST
 diff --git a/drivers/input/misc/Makefile b/drivers/input/misc/Makefile
-index 2281d6803..41d1fc0b5 100644
+index 2281d6803fce..41d1fc0b5bef 100644
 --- a/drivers/input/misc/Makefile
 +++ b/drivers/input/misc/Makefile
 @@ -58,6 +58,7 @@ obj-$(CONFIG_INPUT_MAX77693_HAPTIC)	+= max77693-haptic.o
@@ -47,7 +47,7 @@ index 2281d6803..41d1fc0b5 100644
  obj-$(CONFIG_INPUT_PCF8574)		+= pcf8574_keypad.o
 diff --git a/drivers/input/misc/mt6351-pwrkey.c b/drivers/input/misc/mt6351-pwrkey.c
 new file mode 100644
-index 000000000..271ff7e8f
+index 000000000000..271ff7e8fa2c
 --- /dev/null
 +++ b/drivers/input/misc/mt6351-pwrkey.c
 @@ -0,0 +1,103 @@
@@ -154,3 +154,6 @@ index 000000000..271ff7e8f
 +
 +MODULE_DESCRIPTION("MediaTek MT6351 PMIC power key");
 +MODULE_LICENSE("GPL");
+-- 
+2.53.0
+

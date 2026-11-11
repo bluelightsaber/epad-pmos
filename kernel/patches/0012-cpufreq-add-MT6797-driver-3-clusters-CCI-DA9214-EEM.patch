@@ -1,7 +1,7 @@
 From 60ad73cf54a6e026ffad73646e33025773fb66f9 Mon Sep 17 00:00:00 2001
 From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
 Date: Fri, 23 Oct 2026 00:20:03 +0200
-Subject: [PATCH 12/20] cpufreq: add MT6797 driver (3 clusters + CCI, DA9214,
+Subject: [PATCH 12/51] cpufreq: add MT6797 driver (3 clusters + CCI, DA9214,
  EEM)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -13,7 +13,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  create mode 100644 drivers/cpufreq/mt6797-cpufreq.c
 
 diff --git a/drivers/cpufreq/Kconfig.arm b/drivers/cpufreq/Kconfig.arm
-index a441668f9..b8686de70 100644
+index a441668f9e0c..b8686de70259 100644
 --- a/drivers/cpufreq/Kconfig.arm
 +++ b/drivers/cpufreq/Kconfig.arm
 @@ -121,6 +121,13 @@ config ARM_KIRKWOOD_CPUFREQ
@@ -31,7 +31,7 @@ index a441668f9..b8686de70 100644
  	tristate "CPU Frequency scaling support for MediaTek SoCs"
  	depends on ARCH_MEDIATEK || COMPILE_TEST
 diff --git a/drivers/cpufreq/Makefile b/drivers/cpufreq/Makefile
-index 6c7a39b7f..30ee6853a 100644
+index 6c7a39b7f8d2..30ee6853aa21 100644
 --- a/drivers/cpufreq/Makefile
 +++ b/drivers/cpufreq/Makefile
 @@ -65,6 +65,7 @@ obj-$(CONFIG_ARM_IMX6Q_CPUFREQ)		+= imx6q-cpufreq.o
@@ -44,7 +44,7 @@ index 6c7a39b7f..30ee6853a 100644
  obj-$(CONFIG_ARM_PXA2xx_CPUFREQ)	+= pxa2xx-cpufreq.o
 diff --git a/drivers/cpufreq/mt6797-cpufreq.c b/drivers/cpufreq/mt6797-cpufreq.c
 new file mode 100644
-index 000000000..0371b2a4e
+index 000000000000..0371b2a4eec5
 --- /dev/null
 +++ b/drivers/cpufreq/mt6797-cpufreq.c
 @@ -0,0 +1,851 @@
@@ -899,3 +899,6 @@ index 000000000..0371b2a4e
 +
 +MODULE_DESCRIPTION("MT6797 CPU DVFS (E-PAD, SB bin)");
 +MODULE_LICENSE("GPL");
+-- 
+2.53.0
+

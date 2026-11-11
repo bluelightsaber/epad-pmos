@@ -1,7 +1,7 @@
 From 89ce084697973af2e67baec74baf7a5f86b0a48a Mon Sep 17 00:00:00 2001
 From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
 Date: Fri, 23 Oct 2026 00:20:00 +0200
-Subject: [PATCH 04/20] regulator: add minimal MT6351 regulator driver over the
+Subject: [PATCH 04/51] regulator: add minimal MT6351 regulator driver over the
  PMIC wrapper
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -14,7 +14,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  create mode 100644 drivers/regulator/mt6351-regulator.c
 
 diff --git a/drivers/regulator/Kconfig b/drivers/regulator/Kconfig
-index a54a54919..2781493d1 100644
+index a54a549196fe..2781493d1d79 100644
 --- a/drivers/regulator/Kconfig
 +++ b/drivers/regulator/Kconfig
 @@ -937,6 +937,12 @@ config REGULATOR_MT6332
@@ -31,7 +31,7 @@ index a54a54919..2781493d1 100644
  	tristate "MediaTek MT6357 PMIC"
  	depends on MFD_MT6397
 diff --git a/drivers/regulator/Makefile b/drivers/regulator/Makefile
-index 134eee274..927f1d713 100644
+index 134eee274dbf..927f1d7130e9 100644
 --- a/drivers/regulator/Makefile
 +++ b/drivers/regulator/Makefile
 @@ -111,6 +111,7 @@ obj-$(CONFIG_REGULATOR_MT6315)  += mt6316-regulator.o
@@ -44,7 +44,7 @@ index 134eee274..927f1d713 100644
  obj-$(CONFIG_REGULATOR_MT6359)	+= mt6359-regulator.o
 diff --git a/drivers/regulator/mt6351-regulator.c b/drivers/regulator/mt6351-regulator.c
 new file mode 100644
-index 000000000..4a7524097
+index 000000000000..4a7524097e9b
 --- /dev/null
 +++ b/drivers/regulator/mt6351-regulator.c
 @@ -0,0 +1,94 @@
@@ -143,7 +143,7 @@ index 000000000..4a7524097
 +MODULE_DESCRIPTION("LDO del PMIC MediaTek MT6351 (mínimo, E-PAD)");
 +MODULE_LICENSE("GPL");
 diff --git a/drivers/soc/mediatek/mtk-pmic-wrap.c b/drivers/soc/mediatek/mtk-pmic-wrap.c
-index 0bcd85826..c734e7db9 100644
+index 0bcd85826375..c734e7db9a86 100644
 --- a/drivers/soc/mediatek/mtk-pmic-wrap.c
 +++ b/drivers/soc/mediatek/mtk-pmic-wrap.c
 @@ -2495,7 +2495,8 @@ static int pwrap_probe(struct platform_device *pdev)
@@ -156,3 +156,6 @@ index 0bcd85826..c734e7db9 100644
  		if (IS_ERR(wrp->rstc)) {
  			ret = PTR_ERR(wrp->rstc);
  			dev_dbg(wrp->dev, "cannot get pwrap reset: %d\n", ret);
+-- 
+2.53.0
+

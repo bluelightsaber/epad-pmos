@@ -1,0 +1,66 @@
+From 061c71561414090d8e3a9e6c0e7c9bcc37df1eb6 Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Sun, 1 Nov 2026 21:07:04 +0100
+Subject: [PATCH 29/51] drm/sysfb: emulate ABGR8888, XBGR8888 and ARGB8888 on
+ the primary plane
+
+Android composers (drm_hwcomposer) import RGBA_8888 client targets as
+ABGR8888; with only XRGB8888 accepted, ADDFB2 fails with -EINVAL and
+nothing is ever presented. Swapping R and B is the same per-pixel
+operation as xrgb8888_to_abgr8888, so reuse it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/gpu/drm/sysfb/drm_sysfb_helper.h  |  2 +-
+ drivers/gpu/drm/sysfb/drm_sysfb_modeset.c | 15 ++++++++++++++-
+ 2 files changed, 15 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/gpu/drm/sysfb/drm_sysfb_helper.h b/drivers/gpu/drm/sysfb/drm_sysfb_helper.h
+index 547f2327af5e..c26e16a2a0b2 100644
+--- a/drivers/gpu/drm/sysfb/drm_sysfb_helper.h
++++ b/drivers/gpu/drm/sysfb/drm_sysfb_helper.h
+@@ -120,7 +120,7 @@ int drm_sysfb_plane_helper_get_scanout_buffer(struct drm_plane *plane,
+ 					      struct drm_scanout_buffer *sb);
+ 
+ #define DRM_SYSFB_PLANE_NFORMATS(_num_native) \
+-	((_num_native) + 1)
++	((_num_native) + 4)
+ 
+ #define DRM_SYSFB_PLANE_FORMAT_MODIFIERS \
+ 	DRM_FORMAT_MOD_LINEAR, \
+diff --git a/drivers/gpu/drm/sysfb/drm_sysfb_modeset.c b/drivers/gpu/drm/sysfb/drm_sysfb_modeset.c
+index d2de29caf89e..84c1f862b4d5 100644
+--- a/drivers/gpu/drm/sysfb/drm_sysfb_modeset.c
++++ b/drivers/gpu/drm/sysfb/drm_sysfb_modeset.c
+@@ -128,6 +128,10 @@ size_t drm_sysfb_build_fourcc_list(struct drm_device *dev,
+ 	 */
+ 	static const u32 extra_fourccs[] = {
+ 		DRM_FORMAT_XRGB8888,
++		/* Android RGBA_8888/RGBX_8888/BGRA_8888 client targets */
++		DRM_FORMAT_ABGR8888,
++		DRM_FORMAT_XBGR8888,
++		DRM_FORMAT_ARGB8888,
+ 	};
+ 	static const size_t extra_nfourccs = ARRAY_SIZE(extra_fourccs);
+ 
+@@ -202,7 +206,16 @@ static drm_sysfb_blit_func drm_sysfb_get_blit_func(u32 dst_format, u32 src_forma
+ {
+ 	if (src_format == dst_format) {
+ 		return drm_sysfb_memcpy;
+-	} else if (src_format == DRM_FORMAT_XRGB8888) {
++	} else if (src_format == DRM_FORMAT_ARGB8888 && dst_format == DRM_FORMAT_XRGB8888) {
++		return drm_sysfb_memcpy;
++	} else if ((src_format == DRM_FORMAT_ABGR8888 || src_format == DRM_FORMAT_XBGR8888) &&
++		   (dst_format == DRM_FORMAT_ARGB8888 || dst_format == DRM_FORMAT_XRGB8888)) {
++		/* swapping R and B is symmetric; it also sets opaque alpha */
++		return drm_fb_xrgb8888_to_abgr8888;
++	} else if (src_format == DRM_FORMAT_ARGB8888) {
++		src_format = DRM_FORMAT_XRGB8888;
++	}
++	if (src_format == DRM_FORMAT_XRGB8888) {
+ 		switch (dst_format) {
+ 		case DRM_FORMAT_RGB565:
+ 			return drm_fb_xrgb8888_to_rgb565;
+-- 
+2.53.0
+

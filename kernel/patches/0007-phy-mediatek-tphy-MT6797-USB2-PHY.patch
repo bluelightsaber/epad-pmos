@@ -1,7 +1,7 @@
 From 997c02516dd29d181596a71a4753f2e12ad18792 Mon Sep 17 00:00:00 2001
 From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
 Date: Fri, 23 Oct 2026 00:20:01 +0200
-Subject: [PATCH 07/20] phy: mediatek: tphy: MT6797 USB2 PHY
+Subject: [PATCH 07/51] phy: mediatek: tphy: MT6797 USB2 PHY
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
@@ -9,7 +9,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  1 file changed, 25 insertions(+)
 
 diff --git a/drivers/phy/mediatek/phy-mtk-tphy.c b/drivers/phy/mediatek/phy-mtk-tphy.c
-index acf506529..8ddddb871 100644
+index acf506529507..8ddddb871bd4 100644
 --- a/drivers/phy/mediatek/phy-mtk-tphy.c
 +++ b/drivers/phy/mediatek/phy-mtk-tphy.c
 @@ -294,6 +294,8 @@ struct mtk_phy_pdata {
@@ -65,3 +65,6 @@ index acf506529..8ddddb871 100644
  	{ .compatible = "mediatek,mt8173-u3phy", .data = &mt8173_pdata },
  	{ .compatible = "mediatek,mt8195-tphy", .data = &mt8195_pdata },
  	{ .compatible = "mediatek,generic-tphy-v1", .data = &tphy_v1_pdata },
+-- 
+2.53.0
+

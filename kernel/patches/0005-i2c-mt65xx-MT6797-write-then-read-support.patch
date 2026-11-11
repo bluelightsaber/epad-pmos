@@ -1,7 +1,7 @@
 From 1d047a6fded5a6fa2c630bed7ed0ff10e9d6d6af Mon Sep 17 00:00:00 2001
 From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
 Date: Fri, 23 Oct 2026 00:20:00 +0200
-Subject: [PATCH 05/20] i2c: mt65xx: MT6797 write-then-read support
+Subject: [PATCH 05/51] i2c: mt65xx: MT6797 write-then-read support
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
@@ -9,7 +9,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  1 file changed, 19 insertions(+)
 
 diff --git a/drivers/i2c/busses/i2c-mt65xx.c b/drivers/i2c/busses/i2c-mt65xx.c
-index 307925fb7..4ef90591c 100644
+index 307925fb78e3..4ef90591cb9d 100644
 --- a/drivers/i2c/busses/i2c-mt65xx.c
 +++ b/drivers/i2c/busses/i2c-mt65xx.c
 @@ -456,6 +456,24 @@ static const struct mtk_i2c_compatible mt7986_compat = {
@@ -45,3 +45,6 @@ index 307925fb7..4ef90591c 100644
  	{ .compatible = "mediatek,mt6589-i2c", .data = &mt6589_compat },
  	{ .compatible = "mediatek,mt7622-i2c", .data = &mt7622_compat },
  	{ .compatible = "mediatek,mt7981-i2c", .data = &mt7981_compat },
+-- 
+2.53.0
+

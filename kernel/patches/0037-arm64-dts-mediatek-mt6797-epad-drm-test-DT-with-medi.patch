@@ -1,0 +1,135 @@
+From 0a9be183d8b3c70764f7074d28caa33801015194 Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Mon, 2 Nov 2026 01:16:54 +0100
+Subject: [PATCH 37/51] arm64: dts: mediatek: mt6797-epad-drm: test DT with
+ mediatek-drm
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm64/boot/dts/mediatek/Makefile         |   1 +
+ .../boot/dts/mediatek/mt6797-epad-drm.dts     | 104 ++++++++++++++++++
+ 2 files changed, 105 insertions(+)
+ create mode 100644 arch/arm64/boot/dts/mediatek/mt6797-epad-drm.dts
+
+diff --git a/arch/arm64/boot/dts/mediatek/Makefile b/arch/arm64/boot/dts/mediatek/Makefile
+index 449e60e487a7..affe55170a6f 100644
+--- a/arch/arm64/boot/dts/mediatek/Makefile
++++ b/arch/arm64/boot/dts/mediatek/Makefile
+@@ -189,3 +189,4 @@ DTC_FLAGS_mt7988a-bananapi-bpi-r4-pro-4e := -@
+ DTC_FLAGS_mt7988a-bananapi-bpi-r4-pro-8x := -@
+ DTC_FLAGS_mt8395-radxa-nio-12l := -@
+ dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-epad.dtb
++dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-epad-drm.dtb
+diff --git a/arch/arm64/boot/dts/mediatek/mt6797-epad-drm.dts b/arch/arm64/boot/dts/mediatek/mt6797-epad-drm.dts
+new file mode 100644
+index 000000000000..65ebccd81204
+--- /dev/null
++++ b/arch/arm64/boot/dts/mediatek/mt6797-epad-drm.dts
+@@ -0,0 +1,104 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * E-PAD con driver de display real (mediatek-drm) en vez del simple-framebuffer de lk: RDMA0 -> DSI0 ->
++ * MIPI TX0 -> T1000, con el dominio MM gestionado por el kernel (se puede apagar al suspender).
++ * Variante de prueba: el DT normal sigue siendo mt6797-epad.dts.
++ */
++#include "mt6797-epad.dts"
++
++/ {
++	aliases {
++		rdma0 = &disp_rdma0;
++		dsi0 = &dsi0;
++	};
++
++	chosen {
++		/delete-node/ framebuffer@bdc00000;
++	};
++
++	smi_common: smi@14022000 {
++		compatible = "mediatek,mt6797-smi-common";
++		reg = <0 0x14022000 0 0x1000>;
++		power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>;
++		clocks = <&mmsys CLK_MM_SMI_COMMON>, <&mmsys CLK_MM_SMI_COMMON>;
++		clock-names = "apb", "smi";
++	};
++
++	larb0: larb@14020000 {
++		compatible = "mediatek,mt6797-smi-larb";
++		reg = <0 0x14020000 0 0x1000>;
++		mediatek,smi = <&smi_common>;
++		power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>;
++		clocks = <&mmsys CLK_MM_SMI_LARB0>, <&mmsys CLK_MM_SMI_LARB0>;
++		clock-names = "apb", "smi";
++	};
++
++	disp_rdma0: rdma@1400f000 {
++		compatible = "mediatek,mt6797-disp-rdma", "mediatek,mt8173-disp-rdma";
++		reg = <0 0x1400f000 0 0x1000>;
++		interrupts = <GIC_SPI 217 IRQ_TYPE_LEVEL_LOW>;
++		power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>;
++		clocks = <&mmsys CLK_MM_DISP_RDMA0>;
++		mediatek,larb = <&larb0>;
++	};
++
++	disp_mutex: mutex@1401f000 {
++		compatible = "mediatek,mt6797-disp-mutex";
++		reg = <0 0x1401f000 0 0x1000>;
++		interrupts = <GIC_SPI 202 IRQ_TYPE_LEVEL_LOW>;
++		power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>;
++	};
++
++	mipi_tx0: dsi-phy@10215000 {
++		compatible = "mediatek,mt6797-mipi-tx";
++		reg = <0 0x10215000 0 0x1000>;
++		clocks = <&clk26m>;
++		clock-output-names = "mipi_tx0_pll";
++		#clock-cells = <0>;
++		#phy-cells = <0>;
++	};
++
++	dsi0: dsi@1401c000 {
++		compatible = "mediatek,mt6797-dsi", "mediatek,mt8173-dsi";
++		reg = <0 0x1401c000 0 0x1000>;
++		interrupts = <GIC_SPI 229 IRQ_TYPE_LEVEL_LOW>;
++		power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>;
++		clocks = <&mmsys CLK_MM_DSI0_MM_CLOCK>, <&mmsys CLK_MM_DSI0_INTERFACE_CLOCK>,
++			 <&mipi_tx0>;
++		clock-names = "engine", "digital", "hs";
++		phys = <&mipi_tx0>;
++		phy-names = "dphy";
++		#address-cells = <1>;
++		#size-cells = <0>;
++
++		panel@0 {
++			compatible = "eink,t1000-dsi";
++			reg = <0>;
++
++			port {
++				panel_in: endpoint {
++					remote-endpoint = <&dsi0_out>;
++				};
++			};
++		};
++
++		port {
++			dsi0_out: endpoint {
++				remote-endpoint = <&panel_in>;
++			};
++		};
++	};
++};
++
++&mmsys {
++	power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>;
++};
++
++/* El DSI lo lleva mediatek-drm: eink-t1000 solo manda órdenes por I2C. */
++&i2c1 {
++	eink@6 {
++		/delete-property/ mediatek,dsi-base;
++		/delete-property/ mediatek,mmsys-base;
++		/delete-property/ mediatek,ovl-base;
++	};
++};
+-- 
+2.53.0
+

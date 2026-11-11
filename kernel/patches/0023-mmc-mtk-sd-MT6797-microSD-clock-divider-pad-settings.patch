@@ -1,0 +1,213 @@
+From fb453f39dd17d2a910be23795498aaeee102461d Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Sat, 31 Oct 2026 21:49:42 +0100
+Subject: [PATCH 23/51] mmc: mtk-sd: MT6797 microSD: clock divider, pad
+ settings, 1.8 V detection, power cycle
+
+- On MT6797 the source_cg gate (infra_msdc1) also gates the MSDC register
+  block: msdc_set_mclk() wrote CKDIV with it closed, the write was lost and the
+  card clock stayed at src/2 (96 MHz) whatever was requested. Identification
+  then worked by luck at 3.3 V and failed at 1.8 V (CMD2 response CRC). Keep
+  the gate open while changing the divider (cg_keeps_regs).
+- Set TDSEL/RDSEL/BIAS of the MSDC1 pads for the signal voltage like the BSP
+  (optional mediatek,pad-iocfg = <&pio reg-index>).
+- After switching to 1.8 V run the hardware detection (BV18SDT/BV18PSS).
+- mediatek,power-cycle-on-probe: power the card off at probe when the
+  previous boot left VMCH/VMC on (card stuck in 1.8 V signalling).
+
+Result on the E-PAD: UHS SDR104 at 192 MHz, ~74 MB/s sequential read.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/mmc/host/mtk-sd.c | 98 ++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 96 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/mmc/host/mtk-sd.c b/drivers/mmc/host/mtk-sd.c
+index cdaaaa2a1e91..ecd2dfc371d5 100644
+--- a/drivers/mmc/host/mtk-sd.c
++++ b/drivers/mmc/host/mtk-sd.c
+@@ -14,6 +14,7 @@
+ #include <linux/ioport.h>
+ #include <linux/irq.h>
+ #include <linux/of.h>
++#include <linux/of_address.h>
+ #include <linux/pinctrl/consumer.h>
+ #include <linux/platform_device.h>
+ #include <linux/pm.h>
+@@ -446,6 +447,8 @@ struct mtk_mmc_compatible {
+ 	u8 pop_en_cnt;
+ 	bool enhance_rx;
+ 	bool support_64g;
++	bool cg_keeps_regs;	/* source_cg también corta el acceso a MSDC_CFG: no cerrarla al cambiar el divisor (MT6797) */
++	bool bv18_detect;	/* tras pasar a 1,8 V, detección hardware MSDC_CFG_BV18SDT/BV18PSS (MT6797) */
+ 	bool use_internal_cd;
+ 	bool support_new_tx;
+ 	bool support_new_rx;
+@@ -513,6 +516,7 @@ struct msdc_host {
+ 	u32 hs400_cmd_int_delay; /* cmd internal delay for HS400 */
+ 	u32 tuning_step;
+ 	bool hs400_cmd_resp_sel_rising;
++	void __iomem *pad_base;	/* MT6797: bloque IOCFG de los pads (TDSEL/RDSEL/BIAS) */
+ 				 /* cmd response sample selection for HS400 */
+ 	bool hs400_mode;	/* current eMMC will run at hs400 mode */
+ 	bool hs400_tuning;	/* hs400 mode online tuning */
+@@ -586,6 +590,8 @@ static const struct mtk_mmc_compatible mt6795_compat = {
+  */
+ static const struct mtk_mmc_compatible mt6797_compat = {
+ 	.clk_div_bits = 12,
++	.bv18_detect = true,
++	.cg_keeps_regs = true,
+ 	.recheck_sdio_irq = false,
+ 	.hs400_tune = false,
+ 	.pad_tune_reg = MSDC_PAD_TUNE0,
+@@ -1099,7 +1105,12 @@ static void msdc_set_mclk(struct msdc_host *host, unsigned char timing, u32 hz)
+ 	}
+ 	sdr_clr_bits(host->base + MSDC_CFG, MSDC_CFG_CKPDN);
+ 
+-	clk_disable_unprepare(host->src_clk_cg);
++	/*
++	 * En MT6797 la puerta source_cg (infra_msdc1) es también la del bloque de registros: con ella cerrada la
++	 * escritura de CKDIV se pierde y el reloj queda en src/2 (96 MHz) sea cual sea la frecuencia pedida.
++	 */
++	if (!host->dev_comp->cg_keeps_regs)
++		clk_disable_unprepare(host->src_clk_cg);
+ 	if (host->dev_comp->clk_div_bits == 8)
+ 		sdr_set_field(host->base + MSDC_CFG,
+ 			      MSDC_CFG_CKMOD | MSDC_CFG_CKDIV,
+@@ -1109,7 +1120,8 @@ static void msdc_set_mclk(struct msdc_host *host, unsigned char timing, u32 hz)
+ 			      MSDC_CFG_CKMOD_EXTRA | MSDC_CFG_CKDIV_EXTRA,
+ 			      (mode << 12) | div);
+ 
+-	clk_prepare_enable(host->src_clk_cg);
++	if (!host->dev_comp->cg_keeps_regs)
++		clk_prepare_enable(host->src_clk_cg);
+ 	readl_poll_timeout(host->base + MSDC_CFG, val, (val & MSDC_CFG_CKSTB), 0, 0);
+ 	sdr_set_bits(host->base + MSDC_CFG, MSDC_CFG_CKPDN);
+ 	mmc->actual_clock = sclk;
+@@ -1678,6 +1690,28 @@ static void msdc_set_buswidth(struct msdc_host *host, u32 width)
+ 	dev_dbg(host->dev, "Bus Width = %d", width);
+ }
+ 
++/*
++ * MT6797 (MSDC1): los pads de la microSD necesitan TDSEL, RDSEL y BIAS según el voltaje de señal, como hace
++ * el BSP (msdc_io.c: msdc_set_tdsel/rdsel/driving). Sin esto los pads se quedan como los dejó el arranque
++ * anterior (p. ej. a 1,8 V tras el Android de fábrica en UHS) y la tarjeta falla de forma intermitente.
++ */
++#define MT6797_MSDC1_RDSEL		0xa0	/* bits 25:8: 0xc30c a 3,3 V, 0 a 1,8 V */
++#define MT6797_MSDC1_RDSEL_MASK		GENMASK(25, 8)
++#define MT6797_MSDC1_TDSEL		0xc0	/* bits 27:16: 0xccc */
++#define MT6797_MSDC1_TDSEL_MASK		GENMASK(27, 16)
++#define MT6797_MSDC1_DRV		0x1b0	/* bits 20:16: BIAS = 5 */
++#define MT6797_MSDC1_BIAS_MASK		GENMASK(20, 16)
++
++static void msdc_pad_set_voltage(struct msdc_host *host, bool v18)
++{
++	if (!host->pad_base)
++		return;
++
++	sdr_set_field(host->pad_base + MT6797_MSDC1_TDSEL, MT6797_MSDC1_TDSEL_MASK, 0xccc);
++	sdr_set_field(host->pad_base + MT6797_MSDC1_RDSEL, MT6797_MSDC1_RDSEL_MASK, v18 ? 0 : 0xc30c);
++	sdr_set_field(host->pad_base + MT6797_MSDC1_DRV, MT6797_MSDC1_BIAS_MASK, 0x5);
++}
++
+ static int msdc_ops_switch_volt(struct mmc_host *mmc, struct mmc_ios *ios)
+ {
+ 	struct msdc_host *host = mmc_priv(mmc);
+@@ -1702,6 +1736,26 @@ static int msdc_ops_switch_volt(struct mmc_host *mmc, struct mmc_ios *ios)
+ 			pinctrl_select_state(host->pinctrl, host->pins_uhs);
+ 		else
+ 			pinctrl_select_state(host->pinctrl, host->pins_default);
++		msdc_pad_set_voltage(host, ios->signal_voltage == MMC_SIGNAL_VOLTAGE_180);
++
++		/*
++		 * MT6797 (BSP sd.c msdc_ops_switch_volt): tras pasar a 1,8 V el controlador comprueba él mismo el
++		 * cambio (MSDC_CFG_BV18SDT, con el reloj a ~260 kHz) y lo confirma en MSDC_CFG_BV18PSS.
++		 */
++		if (host->dev_comp->bv18_detect &&
++		    ios->signal_voltage == MMC_SIGNAL_VOLTAGE_180) {
++			u32 val;
++
++			msdc_set_mclk(host, MMC_TIMING_LEGACY, 260000);
++			usleep_range(10000, 11000);
++			sdr_set_bits(host->base + MSDC_CFG, MSDC_CFG_BV18SDT);
++			ret = readl_poll_timeout(host->base + MSDC_CFG, val,
++						 !(val & MSDC_CFG_BV18SDT), 10, 20000);
++			if (ret || !(val & MSDC_CFG_BV18PSS)) {
++				dev_warn(host->dev, "cambio a 1,8 V no confirmado (MSDC_CFG %08x)\n", val);
++				return -EAGAIN;
++			}
++		}
+ 	}
+ 	return 0;
+ }
+@@ -1889,6 +1943,8 @@ static irqreturn_t msdc_irq(int irq, void *dev_id)
+ 	return IRQ_HANDLED;
+ }
+ 
++static void msdc_pad_set_voltage(struct msdc_host *host, bool v18);
++
+ static void msdc_init_hw(struct msdc_host *host)
+ {
+ 	u32 val, pb1_val, pb2_val;
+@@ -1944,6 +2000,7 @@ static void msdc_init_hw(struct msdc_host *host)
+ 	}
+ 	writel(0, host->base + MSDC_IOCON);
+ 	sdr_set_field(host->base + MSDC_IOCON, MSDC_IOCON_DDLSEL, 0);
++	msdc_pad_set_voltage(host, false);
+ 
+ 	/*
+ 	 * Patch bit 0 and 1 are completely rewritten, but for patch bit 2
+@@ -2942,6 +2999,19 @@ static void msdc_of_property_parse(struct platform_device *pdev,
+ 		host->cqhci = true;
+ 	else
+ 		host->cqhci = false;
++
++	/* mediatek,pad-iocfg = <&pio índice-de-reg>: sin request_mem_region (el bloque es del pinctrl) */
++	{
++		struct of_phandle_args args;
++
++		if (!of_parse_phandle_with_fixed_args(pdev->dev.of_node, "mediatek,pad-iocfg",
++						      1, 0, &args)) {
++			host->pad_base = of_iomap(args.np, args.args[0]);
++			of_node_put(args.np);
++			if (!host->pad_base)
++				dev_warn(&pdev->dev, "no se pudo mapear mediatek,pad-iocfg\n");
++		}
++	}
+ }
+ 
+ static int msdc_of_clock_parse(struct platform_device *pdev,
+@@ -3034,6 +3104,30 @@ static int msdc_drv_probe(struct platform_device *pdev)
+ 	if (ret)
+ 		return ret;
+ 
++	/*
++	 * La tarjeta conserva la señalización a 1,8 V mientras no se le corte la alimentación (spec SD), y un
++	 * reinicio en caliente desde un sistema que la dejó en UHS mantiene VMCH/VMC encendidos. Apagarlos aquí
++	 * (enable + disable de un regulador encendido por el arranque anterior) devuelve la tarjeta a 3,3 V.
++	 */
++	if (of_property_read_bool(pdev->dev.of_node, "mediatek,power-cycle-on-probe")) {
++		struct regulator *regs[] = { mmc->supply.vmmc, mmc->supply.vqmmc };
++		bool cycled = false;
++		int i;
++
++		for (i = 0; i < ARRAY_SIZE(regs); i++) {
++			if (IS_ERR_OR_NULL(regs[i]) || regulator_is_enabled(regs[i]) <= 0)
++				continue;
++			if (!regulator_enable(regs[i])) {
++				regulator_disable(regs[i]);
++				cycled = true;
++			}
++		}
++		if (cycled) {
++			dev_info(&pdev->dev, "tarjeta apagada en el sondeo (alimentación heredada)\n");
++			msleep(100);
++		}
++	}
++
+ 	ret = msdc_of_clock_parse(pdev, host);
+ 	if (ret)
+ 		return ret;
+-- 
+2.53.0
+

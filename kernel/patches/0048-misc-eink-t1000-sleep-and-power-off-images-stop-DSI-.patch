@@ -1,0 +1,607 @@
+From aef65a59d2f2bd2f69d4973a6abf3ce3438612f2 Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 20:22:14 +0100
+Subject: [PATCH 48/51] misc: eink-t1000: sleep and power-off images, stop DSI
+ video when idle
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/misc/eink-t1000.c  | 368 +++++++++++++++++++++++++++++++++++--
+ include/linux/eink-t1000.h |   2 +
+ 2 files changed, 350 insertions(+), 20 deletions(-)
+
+diff --git a/drivers/misc/eink-t1000.c b/drivers/misc/eink-t1000.c
+index 163f81a33c38..3330e4ad66a4 100644
+--- a/drivers/misc/eink-t1000.c
++++ b/drivers/misc/eink-t1000.c
+@@ -9,7 +9,8 @@
+  *
+  * Interfaz compatible con /dev/t1000 de fábrica: ioctl 0x60 (leer modo), 0x61 (fijar modo), 0x43 (leer
+  * VCOM), 0x5700 (temperatura), 0x100 (estado del probe); read() devuelve la versión del firmware.
+- * Además, atributos sysfs: mode, temperature, vcom, version, waveform, hrdy.
++ * Además, atributos sysfs: mode, temperature, vcom, version, waveform, hrdy, sleep_screen y sleep_image
++ * (pantalla de reposo, ver t1000_show_sleep_image()).
+  *
+  * DSI (opcional, propiedad mediatek,dsi-base): lk deja el DSI0 en modo vídeo (~55 fps leyendo el framebuffer de
+  * la DRAM continuamente, ~100 mA). El T1000 solo pinta al recibir la orden de modo (0x61) y lee la imagen del
+@@ -30,6 +31,7 @@
+  * T1000), dormir/sueño ligero (requieren manejar el pin de despertar), autorefresco ni actualización de
+  * firmware/waveform.
+  */
++#include <linux/reboot.h>
+ #include <linux/delay.h>
+ #include <linux/eink-t1000.h>
+ #include <linux/fs.h>
+@@ -42,6 +44,7 @@
+ #include <linux/of.h>
+ #include <linux/spinlock.h>
+ #include <linux/uaccess.h>
++#include <linux/vmalloc.h>
+ #include <linux/workqueue.h>
+ 
+ #define T1000_RESP_REG		0x34
+@@ -79,9 +82,28 @@ struct t1000 {
+ 	u32 mm_cg[2];
+ 	bool video;
+ 	unsigned int mode;	/* última orden de modo (0, 1 o 2) */
++	/*
++	 * Modo elegido por el usuario (0, 1 o 2), lo que devuelven «mode» y el ioctl de leer modo. El refresco
++	 * automático manda 0x61 con 0 como fábrica y el T1000 pasa a informar 0: sin esto la interfaz volvía a
++	 * «Lectura» con cada cambio de pantalla (aosp-22). Repetir el modo elegido en cada refresco no es opción:
++	 * deja el T1000 sin pintar hasta apagarlo del todo (probado otra vez el 2026-11-02).
++	 */
++	unsigned int user_mode;
+ 	bool auto_refresh;
+ 	struct delayed_work refresh;
+ 	struct delayed_work video_off;
++	u8 *sleep_img;		/* pantalla de reposo: gris de 8 bits, width × height */
++	bool sleep_img_ok;	/* imagen completa escrita */
++	bool sleep_screen;	/* pintarla al apagar la pantalla */
++	struct work_struct sleep_paint;
++	bool screen_off;	/* CRTC apagada (Android en reposo) y sin refrescos desde entonces */
++	struct delayed_work screen_sleep;
++	bool video_hold;	/* despertado de dormir: vídeo siempre en marcha hasta el próximo sueño */
++	unsigned int screen_sleep_tries;
++	u8 *off_img;		/* pantalla de apagado (como sleep_img); la pinta el notificador de apagado */
++	bool off_img_ok;
++	bool powering_off;	/* ya pintada la de apagado: no más refrescos */
++	struct notifier_block off_nb;
+ };
+ 
+ /* Solo hay un T1000; simpledrm lo encuentra por aquí. */
+@@ -105,6 +127,19 @@ MODULE_PARM_DESC(refresh_delay_ms, "espera para agrupar actualizaciones antes de
+ #define OVL_SRC_CON		0x2c
+ #define OVL_SRC_CON_L0		BIT(0)
+ 
++/*
++ * Dormir el T1000 con la pantalla apagada (~140 mA menos, despierta y suspendida), como el Android de fábrica:
++ * screen_sleep_ms después de apagar la CRTC (tras la pantalla de reposo) y despertarlo en el primer refresco,
++ * con el pipeline ya en marcha. Al reanudar de la suspensión no se toca (allí fallaba ~1/10, ver pm_sleep).
++ */
++static bool screen_sleep = true;
++module_param(screen_sleep, bool, 0644);
++static unsigned int screen_sleep_ms = 5000;
++module_param(screen_sleep_ms, uint, 0644);
++static unsigned int screen_wake_fail;
++module_param(screen_wake_fail, uint, 0444);
++MODULE_PARM_DESC(screen_wake_fail, "despertares fallidos del T1000 en el primer refresco (diagnóstico)");
++
+ static bool video_idle_off = true;
+ module_param(video_idle_off, bool, 0644);
+ MODULE_PARM_DESC(video_idle_off, "parar el vídeo DSI en reposo (video_idle_ms sin refrescos)");
+@@ -249,15 +284,19 @@ static int t1000_set_mode(struct t1000 *t, unsigned int mode)
+ 		return -EPERM;
+ 
+ 	mutex_lock(&t->lock);
++	/*
++	 * Vídeo antes de esperar: tras despertar del modo dormido sin vídeo, HRDY no sube hasta que lo hay. Parado solo
++	 * está en reposo (t1000_video_off_work lo para con HRDY = 1), así que arrancarlo aquí no pilla un pintado.
++	 */
++	if (t->dsi && !t->video) {
++		t1000_dsi_video(t, true);
++		msleep(video_settle_ms);	/* varios fotogramas a ~55 fps */
++	}
+ 	/* El driver de fábrica no manda la orden si el T1000 no está listo. */
+ 	ret = t1000_wait_ready(t, 5000);
+ 	if (ret)
+ 		goto out;
+ 	t1000_fb_flush();
+-	if (t->dsi && !t->video) {
+-		t1000_dsi_video(t, true);
+-		msleep(video_settle_ms);	/* varios fotogramas a ~55 fps */
+-	}
+ 	ret = t1000_write(t, cmd, sizeof(cmd));
+ 	if (!ret) {
+ 		unsigned int waited;
+@@ -285,23 +324,43 @@ static void t1000_video_off_work(struct work_struct *work)
+ 	struct t1000 *t = container_of(to_delayed_work(work), struct t1000, video_off);
+ 
+ 	mutex_lock(&t->lock);
+-	if (!gpiod_get_value_cansleep(t->hrdy))	/* aún pinta: sin vídeo no termina */
++	/*
++	 * Tras despertar del modo dormido, parar y volver a arrancar el vídeo deja al T1000 sin ponerse listo nunca
++	 * (HRDY a 0, ni refresca ni vuelve a despertar): como en Android, el vídeo sigue hasta el próximo sueño.
++	 */
++	if (t->video_hold || t->asleep)
++		;
++	else if (!gpiod_get_value_cansleep(t->hrdy))	/* aún pinta: sin vídeo no termina */
+ 		mod_delayed_work(system_unbound_wq, &t->video_off, msecs_to_jiffies(500));
+ 	else if (t->video)
+ 		t1000_dsi_video(t, false);
+ 	mutex_unlock(&t->lock);
+ }
+ 
++static int t1000_wake(struct t1000 *t);
++static int t1000_sleep(struct t1000 *t);
++
+ static void t1000_refresh_work(struct work_struct *work)
+ {
+ 	struct t1000 *t = container_of(to_delayed_work(work), struct t1000, refresh);
+ 	int ret;
+ 
+-	if (t->asleep || !t->auto_refresh)
++	if (!t->auto_refresh || READ_ONCE(t->powering_off))
+ 		return;
++	if (t->asleep) {
++		if (!screen_sleep)
++			return;
++		/* pantalla encendida otra vez: despertar y el refresco de abajo lo deja listo */
++		ret = t1000_wake(t);
++		if (ret) {
++			screen_wake_fail++;
++			dev_warn(&t->client->dev, "no despierta en el refresco (%d), fallos %u\n", ret, screen_wake_fail);
++			return;
++		}
++	}
+ 	ret = t1000_set_mode(t, T1000_REFRESH);
+ 	if (ret)
+-		dev_dbg(&t->client->dev, "refresco automático: %d\n", ret);
++		dev_warn_ratelimited(&t->client->dev, "refresco automático: %d\n", ret);
+ }
+ 
+ /*
+@@ -345,6 +404,8 @@ static void t1000_fb_flush(void)
+ 
+ void t1000_request_refresh(unsigned int y1, unsigned int y2)
+ {
++	if (t1000_dev && READ_ONCE(t1000_dev->powering_off))
++		return;
+ 	struct t1000 *t = READ_ONCE(t1000_dev);
+ 
+ 	spin_lock(&t1000_fb_lock);
+@@ -352,12 +413,89 @@ void t1000_request_refresh(unsigned int y1, unsigned int y2)
+ 	t1000_fb_y2 = max(t1000_fb_y2, y2);
+ 	spin_unlock(&t1000_fb_lock);
+ 
++	if (t && READ_ONCE(t->screen_off)) {
++		WRITE_ONCE(t->screen_off, false);
++		cancel_delayed_work(&t->screen_sleep);
++	}
+ 	/* si ya hay uno en cola no hace nada; si está pintando, queda en cola para después */
+ 	if (t && t->auto_refresh)
+ 		queue_delayed_work(system_unbound_wq, &t->refresh, msecs_to_jiffies(refresh_delay_ms));
+ }
+ EXPORT_SYMBOL_GPL(t1000_request_refresh);
+ 
++/*
++ * Pantalla de reposo: el usuario deja en el atributo binario sleep_image una imagen en gris (8 bits por píxel,
++ * width × height del panel, filas seguidas) y al apagar la pantalla (simpledrm desactiva el CRTC) se pasa a la
++ * copia en RAM y se pinta con un GC; la tinta la conserva sin consumo. Sin imagen, o con sleep_screen = 0, se queda
++ * lo último que había. simpledrm vuelve a mandar la pantalla entera al encenderla.
++ */
++static void t1000_sleep_paint_work(struct work_struct *work)
++{
++	struct t1000 *t = container_of(work, struct t1000, sleep_paint);
++	int ret = t1000_set_mode(t, 0x11);
++
++	if (ret)
++		dev_warn(&t->client->dev, "pantalla de reposo: %d\n", ret);
++}
++
++static void t1000_screen_sleep_work(struct work_struct *work)
++{
++	struct t1000 *t = container_of(to_delayed_work(work), struct t1000, screen_sleep);
++	int ret;
++
++	flush_work(&t->sleep_paint);
++	cancel_delayed_work_sync(&t->refresh);
++	if (!READ_ONCE(t->screen_off) || t->asleep)
++		return;
++	ret = t1000_sleep(t);
++	if (!ret) {
++		t->screen_sleep_tries = 0;
++		return;
++	}
++	/* ocupado (todavía pintando): reintentar unas cuantas veces */
++	if (++t->screen_sleep_tries < 6 && READ_ONCE(t->screen_off)) {
++		dev_dbg(&t->client->dev, "dormir con la pantalla apagada: %d, reintento\n", ret);
++		mod_delayed_work(system_unbound_wq, &t->screen_sleep, msecs_to_jiffies(screen_sleep_ms));
++		return;
++	}
++	dev_warn(&t->client->dev, "no se pudo dormir con la pantalla apagada (%d)\n", ret);
++	t->screen_sleep_tries = 0;
++}
++
++bool t1000_show_sleep_image(void)
++{
++	struct t1000 *t = READ_ONCE(t1000_dev);
++	unsigned int x, y, w, h;
++
++	if (t && screen_sleep) {
++		WRITE_ONCE(t->screen_off, true);
++		t->screen_sleep_tries = 0;
++		mod_delayed_work(system_unbound_wq, &t->screen_sleep, msecs_to_jiffies(screen_sleep_ms));
++	}
++	if (!t || !t->sleep_screen || !t->sleep_img_ok || t->asleep || !t1000_fb_src)
++		return false;
++	w = min(t->width, t1000_fb_pitch / 4);
++	h = min(t->height, t1000_fb_height);
++	/* t->lock: t1000_fb_flush() lee la copia con él */
++	mutex_lock(&t->lock);
++	for (y = 0; y < h; y++) {
++		u32 *dst = t1000_fb_src + y * t1000_fb_pitch;
++		const u8 *src = t->sleep_img + y * t->width;
++
++		for (x = 0; x < w; x++)
++			dst[x] = 0xff000000 | src[x] * 0x010101;
++	}
++	mutex_unlock(&t->lock);
++	spin_lock(&t1000_fb_lock);
++	t1000_fb_y1 = 0;
++	t1000_fb_y2 = t1000_fb_height;
++	spin_unlock(&t1000_fb_lock);
++	cancel_delayed_work(&t->refresh);
++	queue_work(system_unbound_wq, &t->sleep_paint);
++	return true;
++}
++EXPORT_SYMBOL_GPL(t1000_show_sleep_image);
++
+ /*
+  * Sueño del T1000 como Android al apagar la pantalla (traza de fábrica): esperar a que esté libre, GPIO 234 a 0 y
+  * orden 0x61 con modo 0x0f. Despertar: GPIO 234 a 1 y esperar HRDY (~0,75 s).
+@@ -374,6 +512,11 @@ static int t1000_sleep(struct t1000 *t)
+ 		ret = 0;
+ 		goto out;
+ 	}
++	/* sin vídeo, tras un despertar HRDY no sube (ver t1000_set_mode); el vídeo se para luego por reposo */
++	if (t->dsi && !t->video) {
++		t1000_dsi_video(t, true);
++		msleep(video_settle_ms);
++	}
+ 	ret = t1000_wait_ready(t, 2000);
+ 	if (ret)
+ 		goto out;
+@@ -391,6 +534,9 @@ static int t1000_sleep(struct t1000 *t)
+ 		else
+ 			dev_dbg(&t->client->dev, "dormido en %u ms\n", waited);
+ 		t->asleep = true;
++		t->video_hold = false;
++		if (t->dsi && t->video && video_idle_off)
++			t1000_dsi_video(t, false);	/* dormido no lee la imagen */
+ 	}
+ out:
+ 	mutex_unlock(&t->lock);
+@@ -421,10 +567,12 @@ static int t1000_wake(struct t1000 *t)
+ 		}
+ 		if (i)
+ 			dev_info(&t->client->dev, "despertado al intento %d (%d)\n", i + 1, ret);
+-		if (t->dsi && !video)
+-			t1000_dsi_video(t, false);
+-		if (!ret)
++		if (!ret) {
+ 			t->asleep = false;
++			t->video_hold = true;	/* ver t1000_video_off_work */
++		} else if (t->dsi && !video) {
++			t1000_dsi_video(t, false);
++		}
+ 	}
+ 	mutex_unlock(&t->lock);
+ 	return ret;
+@@ -476,15 +624,25 @@ static ssize_t t1000_fop_read(struct file *f, char __user *buf, size_t len, loff
+ 	return simple_read_from_buffer(buf, len, off, t->version, strlen(t->version));
+ }
+ 
++/* Orden de modo pedida desde fuera (sysfs o ioctl): recuerda el modo elegido. */
++static int t1000_set_user_mode(struct t1000 *t, unsigned int mode)
++{
++	int ret = t1000_set_mode(t, mode);
++
++	if (!ret && mode <= 0x02)
++		WRITE_ONCE(t->user_mode, mode);
++	return ret;
++}
++
+ static long t1000_fop_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
+ {
+ 	struct t1000 *t = container_of(f->private_data, struct t1000, misc);
+ 
+ 	switch (cmd) {
+ 	case T1000_IOC_GET_MODE:
+-		return t1000_get_mode(t);
++		return READ_ONCE(t->user_mode);
+ 	case T1000_IOC_SET_MODE:
+-		return t1000_set_mode(t, arg);
++		return t1000_set_user_mode(t, arg);
+ 	case T1000_IOC_GET_VCOM:
+ 		return t1000_get_vcom(t);
+ 	case T1000_IOC_TEMP:
+@@ -508,9 +666,9 @@ static const struct file_operations t1000_fops = {
+ 
+ static ssize_t mode_show(struct device *dev, struct device_attribute *attr, char *buf)
+ {
+-	int v = t1000_get_mode(dev_get_drvdata(dev));
++	struct t1000 *t = dev_get_drvdata(dev);
+ 
+-	return v < 0 ? v : sysfs_emit(buf, "%d\n", v);
++	return sysfs_emit(buf, "%u\n", READ_ONCE(t->user_mode));
+ }
+ 
+ static ssize_t mode_store(struct device *dev, struct device_attribute *attr, const char *buf,
+@@ -522,7 +680,7 @@ static ssize_t mode_store(struct device *dev, struct device_attribute *attr, con
+ 	ret = kstrtouint(buf, 0, &mode);
+ 	if (ret)
+ 		return ret;
+-	ret = t1000_set_mode(dev_get_drvdata(dev), mode);
++	ret = t1000_set_user_mode(dev_get_drvdata(dev), mode);
+ 	return ret ? ret : count;
+ }
+ static DEVICE_ATTR_RW(mode);
+@@ -632,6 +790,136 @@ static ssize_t auto_refresh_store(struct device *dev, struct device_attribute *a
+ }
+ static DEVICE_ATTR_RW(auto_refresh);
+ 
++static ssize_t sleep_screen_show(struct device *dev, struct device_attribute *attr, char *buf)
++{
++	struct t1000 *t = dev_get_drvdata(dev);
++
++	return sysfs_emit(buf, "%d\n", t->sleep_screen && t->sleep_img_ok);
++}
++
++static ssize_t sleep_screen_store(struct device *dev, struct device_attribute *attr, const char *buf,
++				  size_t n)
++{
++	struct t1000 *t = dev_get_drvdata(dev);
++	bool on;
++	int ret = kstrtobool(buf, &on);
++
++	if (ret)
++		return ret;
++	t->sleep_screen = on;
++	return n;
++}
++static DEVICE_ATTR_RW(sleep_screen);
++
++static ssize_t sleep_image_write(struct file *f, struct kobject *kobj, const struct bin_attribute *attr,
++				 char *buf, loff_t off, size_t count)
++{
++	struct t1000 *t = dev_get_drvdata(kobj_to_dev(kobj));
++	size_t size = (size_t)t->width * t->height;
++
++	if (!size)
++		return -ENODEV;
++	if (off >= size)
++		return -EFBIG;
++	count = min_t(size_t, count, size - off);
++	mutex_lock(&t->lock);
++	if (!t->sleep_img)
++		t->sleep_img = vzalloc(size);
++	if (!t->sleep_img) {
++		mutex_unlock(&t->lock);
++		return -ENOMEM;
++	}
++	if (off == 0)
++		t->sleep_img_ok = false;
++	memcpy(t->sleep_img + off, buf, count);
++	if (off + count == size) {
++		t->sleep_img_ok = true;
++		t->sleep_screen = true;
++	}
++	mutex_unlock(&t->lock);
++	return count;
++}
++static BIN_ATTR_WO(sleep_image, 0);
++
++static ssize_t poweroff_image_write(struct file *f, struct kobject *kobj, const struct bin_attribute *attr,
++				    char *buf, loff_t off, size_t count)
++{
++	struct t1000 *t = dev_get_drvdata(kobj_to_dev(kobj));
++	size_t size = (size_t)t->width * t->height;
++
++	if (!size)
++		return -ENODEV;
++	if (off >= size)
++		return -EFBIG;
++	count = min_t(size_t, count, size - off);
++	mutex_lock(&t->lock);
++	if (!t->off_img)
++		t->off_img = vzalloc(size);
++	if (!t->off_img) {
++		mutex_unlock(&t->lock);
++		return -ENOMEM;
++	}
++	if (off == 0)
++		t->off_img_ok = false;
++	memcpy(t->off_img + off, buf, count);
++	if (off + count == size)
++		t->off_img_ok = true;
++	mutex_unlock(&t->lock);
++	return count;
++}
++static BIN_ATTR_WO(poweroff_image, 0);
++
++/*
++ * Al apagar (no al reiniciar): pintar la pantalla de apagado con un GC, esperar a que termine y dormir el T1000.
++ * La tinta la conserva con la tablet apagada. Sin imagen, se queda lo último que hubiera.
++ */
++static int t1000_poweroff_notify(struct notifier_block *nb, unsigned long action, void *data)
++{
++	struct t1000 *t = container_of(nb, struct t1000, off_nb);
++	unsigned int x, y, w, h;
++	int ret;
++
++	if (action != SYS_POWER_OFF && action != SYS_HALT)
++		return NOTIFY_DONE;
++	if (!t->off_img_ok || !t1000_fb_src)
++		return NOTIFY_DONE;
++	WRITE_ONCE(t->powering_off, true);
++	cancel_delayed_work_sync(&t->screen_sleep);
++	cancel_work_sync(&t->sleep_paint);
++	cancel_delayed_work_sync(&t->refresh);
++	cancel_delayed_work_sync(&t->video_off);
++	ret = t1000_wake(t);
++	if (ret) {
++		dev_warn(&t->client->dev, "apagado: no despierta (%d)\n", ret);
++		return NOTIFY_DONE;
++	}
++	w = min(t->width, t1000_fb_pitch / 4);
++	h = min(t->height, t1000_fb_height);
++	mutex_lock(&t->lock);
++	for (y = 0; y < h; y++) {
++		u32 *dst = t1000_fb_src + y * t1000_fb_pitch;
++		const u8 *src = t->off_img + y * t->width;
++
++		for (x = 0; x < w; x++)
++			dst[x] = 0xff000000 | src[x] * 0x010101;
++	}
++	mutex_unlock(&t->lock);
++	spin_lock(&t1000_fb_lock);
++	t1000_fb_y1 = 0;
++	t1000_fb_y2 = t1000_fb_height;
++	spin_unlock(&t1000_fb_lock);
++	ret = t1000_set_mode(t, 0x11);
++	if (!ret) {
++		mutex_lock(&t->lock);
++		ret = t1000_wait_ready(t, 5000);	/* fin del pintado */
++		mutex_unlock(&t->lock);
++	}
++	if (!ret)
++		ret = t1000_sleep(t);
++	dev_info(&t->client->dev, "pantalla de apagado: %d\n", ret);
++	return NOTIFY_DONE;
++}
++
+ static struct attribute *t1000_attrs[] = {
+ 	&dev_attr_video.attr,
+ 	&dev_attr_mode.attr,
+@@ -642,9 +930,21 @@ static struct attribute *t1000_attrs[] = {
+ 	&dev_attr_hrdy.attr,
+ 	&dev_attr_sleep.attr,
+ 	&dev_attr_auto_refresh.attr,
++	&dev_attr_sleep_screen.attr,
++	NULL
++};
++
++static const struct bin_attribute *const t1000_bin_attrs[] = {
++	&bin_attr_sleep_image,
++	&bin_attr_poweroff_image,
+ 	NULL
+ };
+-ATTRIBUTE_GROUPS(t1000);
++
++static const struct attribute_group t1000_group = {
++	.attrs = t1000_attrs,
++	.bin_attrs = t1000_bin_attrs,
++};
++__ATTRIBUTE_GROUPS(t1000);
+ 
+ static void t1000_refresh_stop(void *data)
+ {
+@@ -653,6 +953,10 @@ static void t1000_refresh_stop(void *data)
+ 	WRITE_ONCE(t1000_dev, NULL);
+ 	cancel_delayed_work_sync(&t->refresh);
+ 	cancel_delayed_work_sync(&t->video_off);
++	cancel_work_sync(&t->sleep_paint);
++	cancel_delayed_work_sync(&t->screen_sleep);
++	vfree(t->sleep_img);
++	vfree(t->off_img);
+ }
+ 
+ static void t1000_misc_deregister(void *misc)
+@@ -728,13 +1032,15 @@ static int t1000_probe(struct i2c_client *client)
+ 	} else {
+ 		ret = t1000_get_mode(t);
+ 		if (ret >= 0 && ret <= 0x02)
+-			t->mode = ret;
++			t->mode = t->user_mode = ret;
+ 		dev_info(dev, "T1000 %ux%u, firmware %s, waveform %s, temperatura %d, modo %d\n",
+ 			 t->width, t->height, t->version, t->waveform, t1000_get_temp(t), ret);
+ 	}
+ 
+ 	INIT_DELAYED_WORK(&t->refresh, t1000_refresh_work);
+ 	INIT_DELAYED_WORK(&t->video_off, t1000_video_off_work);
++	INIT_WORK(&t->sleep_paint, t1000_sleep_paint_work);
++	INIT_DELAYED_WORK(&t->screen_sleep, t1000_screen_sleep_work);
+ 	t->auto_refresh = true;
+ 	WRITE_ONCE(t1000_dev, t);
+ 	ret = devm_add_action_or_reset(dev, t1000_refresh_stop, t);
+@@ -748,7 +1054,12 @@ static int t1000_probe(struct i2c_client *client)
+ 	ret = misc_register(&t->misc);
+ 	if (ret)
+ 		return ret;
+-	return devm_add_action_or_reset(dev, t1000_misc_deregister, &t->misc);
++	ret = devm_add_action_or_reset(dev, t1000_misc_deregister, &t->misc);
++	if (ret)
++		return ret;
++	t->off_nb.notifier_call = t1000_poweroff_notify;
++	t->off_nb.priority = 128;	/* antes que el resto: el display aún funciona */
++	return devm_register_reboot_notifier(dev, &t->off_nb);
+ }
+ 
+ /*
+@@ -781,10 +1092,27 @@ static int t1000_suspend(struct device *dev)
+ 	struct t1000 *t = dev_get_drvdata(dev);
+ 	int ret;
+ 
++	flush_work(&t->sleep_paint);	/* la pantalla de reposo se pinta entera (necesita el vídeo) */
+ 	cancel_delayed_work_sync(&t->refresh);
++	cancel_delayed_work_sync(&t->screen_sleep);
++	/*
++	 * Pantalla apagada y el T1000 aún despierto: dormirlo ya, con el vídeo todavía en marcha (si está pintando la
++	 * pantalla de reposo, t1000_sleep espera). Cortar los relojes del display a mitad de un pintado lo deja colgado
++	 * (HRDY a 0 y luego no despierta); si sigue ocupado, aplazar la suspensión.
++	 */
++	if (screen_sleep && READ_ONCE(t->screen_off) && !t->asleep) {
++		ret = t1000_sleep(t);
++		if (ret) {
++			dev_info(dev, "suspensión aplazada: el T1000 no se duerme (%d)\n", ret);
++			mod_delayed_work(system_unbound_wq, &t->screen_sleep, msecs_to_jiffies(1000));
++			return -EBUSY;
++		}
++	}
+ 	cancel_delayed_work_sync(&t->video_off);
+ 	if (t->dsi && t->video && video_idle_off) {
+ 		mutex_lock(&t->lock);
++		if (!t->asleep)
++			t1000_wait_ready(t, 3000);
+ 		t1000_dsi_video(t, false);
+ 		mutex_unlock(&t->lock);
+ 	}
+@@ -793,7 +1121,7 @@ static int t1000_suspend(struct device *dev)
+ 		t1000_mm_gate(t);
+ 		return 0;
+ 	}
+-	t->pm_mode = t1000_get_mode(t);
++	t->pm_mode = READ_ONCE(t->user_mode);	/* el elegido; el T1000 informa 0 tras cada refresco */
+ 	ret = t1000_sleep(t);
+ 	if (ret)
+ 		dev_warn(dev, "no se pudo dormir el T1000 (%d)\n", ret);
+diff --git a/include/linux/eink-t1000.h b/include/linux/eink-t1000.h
+index 7d0f3226ace3..1d55cd2df3b8 100644
+--- a/include/linux/eink-t1000.h
++++ b/include/linux/eink-t1000.h
+@@ -8,10 +8,12 @@
+ #if IS_REACHABLE(CONFIG_EINK_T1000)
+ void t1000_set_framebuffer(void *src, void __iomem *dst, unsigned int pitch, unsigned int height);
+ void t1000_request_refresh(unsigned int y1, unsigned int y2);
++bool t1000_show_sleep_image(void);
+ #else
+ static inline void t1000_set_framebuffer(void *src, void __iomem *dst, unsigned int pitch,
+ 					 unsigned int height) { }
+ static inline void t1000_request_refresh(unsigned int y1, unsigned int y2) { }
++static inline bool t1000_show_sleep_image(void) { return false; }
+ #endif
+ 
+ #endif
+-- 
+2.53.0
+

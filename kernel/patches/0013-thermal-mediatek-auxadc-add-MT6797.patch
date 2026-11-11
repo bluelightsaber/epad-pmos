@@ -1,7 +1,7 @@
 From 6d63b83c610f47e88dc28d87590bd12f55956bb5 Mon Sep 17 00:00:00 2001
 From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
 Date: Fri, 23 Oct 2026 00:20:03 +0200
-Subject: [PATCH 13/20] thermal: mediatek: auxadc: add MT6797
+Subject: [PATCH 13/51] thermal: mediatek: auxadc: add MT6797
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
@@ -9,7 +9,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  1 file changed, 41 insertions(+)
 
 diff --git a/drivers/thermal/mediatek/auxadc_thermal.c b/drivers/thermal/mediatek/auxadc_thermal.c
-index 9ee2e7283..b59cb189c 100644
+index 9ee2e7283435..b59cb189cfb2 100644
 --- a/drivers/thermal/mediatek/auxadc_thermal.c
 +++ b/drivers/thermal/mediatek/auxadc_thermal.c
 @@ -511,6 +511,43 @@ static const struct mtk_thermal_data mt8173_thermal_data = {
@@ -67,3 +67,6 @@ index 9ee2e7283..b59cb189c 100644
  	{
  		.compatible = "mediatek,mt8173-thermal",
  		.data = (void *)&mt8173_thermal_data,
+-- 
+2.53.0
+

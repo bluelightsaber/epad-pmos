@@ -1,0 +1,159 @@
+From 47d799812e8893c3fe10f44b53067092fbe3bb5f Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Sat, 31 Oct 2026 21:49:43 +0100
+Subject: [PATCH 27/51] arm64: dts: mediatek: mt6797-epad: microSD (MSDC1, UHS
+ SDR104), T1000 wakeup
+
+MSDC1 node like the vendor DT (VMCH 3.0 V, VMC 3.0/1.8 V, pins with BSP pulls
+and driving), mmc0/mmc1 aliases, T1000 wakeup GPIO and MMSYS base.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm64/boot/dts/mediatek/mt6797-epad.dts | 88 +++++++++++++++++++-
+ 1 file changed, 87 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm64/boot/dts/mediatek/mt6797-epad.dts b/arch/arm64/boot/dts/mediatek/mt6797-epad.dts
+index f3007607d9d2..a402b9c074f9 100644
+--- a/arch/arm64/boot/dts/mediatek/mt6797-epad.dts
++++ b/arch/arm64/boot/dts/mediatek/mt6797-epad.dts
+@@ -16,6 +16,7 @@
+ #include "mt6797.dtsi"
+ #include <dt-bindings/gpio/gpio.h>
+ #include <dt-bindings/input/input.h>
++#include <dt-bindings/pinctrl/mt65xx.h>
+ #include <dt-bindings/phy/phy.h>
+ #include <dt-bindings/power/mt6797-power.h>
+ 
+@@ -30,6 +31,8 @@ aliases {
+ 		i2c2 = &i2c2;
+ 		i2c3 = &i2c3;
+ 		i2c4 = &i2c4;
++		mmc0 = &mmc0;	/* eMMC siempre mmcblk0, la microSD mmcblk1 */
++		mmc1 = &mmc1;
+ 	};
+ 
+ 	/* Alimentación del digitalizador del lápiz (DT de fábrica: touchpen@, pen_pwr33/pen_pwr18 = salida alta). */
+@@ -291,6 +294,19 @@ mt6351_vgp3: ldo_vgp3 {
+ 					regulator-name = "vgp3";
+ 					regulator-always-on;
+ 				};
++				/* microSD: los maneja el driver MMC (sin always-on) */
++				mt6351_vmch: ldo_vmch {
++					regulator-name = "vmch";
++					/* como el BSP (msdc_sd_power): 3,0 V */
++					regulator-min-microvolt = <3000000>;
++					regulator-max-microvolt = <3000000>;
++				};
++				mt6351_vmc: ldo_vmc {
++					regulator-name = "vmc";
++					/* BSP: 3,0 V con señal a 3,3 V, 1,8 V en UHS */
++					regulator-min-microvolt = <1800000>;
++					regulator-max-microvolt = <3000000>;
++				};
+ 				mt6351_vcn33_bt: ldo_vcn33_bt {
+ 					regulator-name = "vcn33_bt";
+ 					regulator-min-microvolt = <3300000>;
+@@ -413,6 +429,46 @@ ds-rst {
+ 		};
+ 	};
+ 
++	/* microSD (MSDC1); detección de tarjeta por GPIO 67 (DT de fábrica: cd-gpios 67, cd_level 1, pull-up) */
++	mmc1_pins_default: mmc1-default {
++		/* corriente como en fábrica: código 6 (14 mA) en reposo; 3/4 (8/10 mA) en UHS */
++		cmd-dat {
++			pinmux = <MT6797_GPIO130__FUNC_MSDC1_DAT0>, <MT6797_GPIO131__FUNC_MSDC1_DAT1>,
++				 <MT6797_GPIO132__FUNC_MSDC1_DAT2>, <MT6797_GPIO133__FUNC_MSDC1_DAT3>,
++				 <MT6797_GPIO129__FUNC_MSDC1_CMD>;
++			input-enable;
++			bias-pull-up = <MTK_PUPD_SET_R1R0_01>;	/* 129-134 solo tienen PUPD/R1/R0 */
++			drive-strength = <14>;
++		};
++		clk {
++			pinmux = <MT6797_GPIO134__FUNC_MSDC1_CLK>;
++			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
++			drive-strength = <14>;
++		};
++		cd {
++			pinmux = <MT6797_GPIO67__FUNC_GPIO67>;
++			input-enable;
++			input-schmitt-enable;
++			bias-pull-up;
++		};
++	};
++
++	mmc1_pins_uhs: mmc1-uhs {
++		cmd-dat {
++			pinmux = <MT6797_GPIO130__FUNC_MSDC1_DAT0>, <MT6797_GPIO131__FUNC_MSDC1_DAT1>,
++				 <MT6797_GPIO132__FUNC_MSDC1_DAT2>, <MT6797_GPIO133__FUNC_MSDC1_DAT3>,
++				 <MT6797_GPIO129__FUNC_MSDC1_CMD>;
++			input-enable;
++			bias-pull-up = <MTK_PUPD_SET_R1R0_01>;	/* 129-134 solo tienen PUPD/R1/R0 */
++			drive-strength = <8>;
++		};
++		clk {
++			pinmux = <MT6797_GPIO134__FUNC_MSDC1_CLK>;
++			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
++			drive-strength = <10>;
++		};
++	};
++
+ 	epad_t1000_pins: epad-t1000 {
+ 		hrdy {
+ 			pinmux = <MT6797_GPIO236__FUNC_GPIO236>;
+@@ -453,7 +509,9 @@ eink@6 {
+ 		compatible = "eink,t1000";
+ 		reg = <0x06>;
+ 		hrdy-gpios = <&pio 236 GPIO_ACTIVE_HIGH>;
++		wakeup-gpios = <&pio 234 GPIO_ACTIVE_HIGH>;	/* gpio_epad_wakeup_en */
+ 		mediatek,dsi-base = <0x1401c000>;	/* DSI0: vídeo solo al actualizar */
++		mediatek,mmsys-base = <0x14000000>;	/* MMSYS_CONFIG: relojes del display al suspender */
+ 		mediatek,ovl-base = <0x1400b000>;	/* OVL0: quitar la capa del aviso de lk */
+ 	};
+ };
+@@ -626,7 +684,7 @@ wifi_hif: wifi@180f0000 {
+ 		mediatek,use-dma;
+ 	};
+ 
+-	mmc@11230000 {
++	mmc0: mmc@11230000 {
+ 		compatible = "mediatek,mt6797-mmc";
+ 		reg = <0 0x11230000 0 0x1000>;
+ 		interrupts = <GIC_SPI 79 IRQ_TYPE_LEVEL_LOW>;
+@@ -648,6 +706,34 @@ mmc@11230000 {
+ 		vmmc-supply = <&mt6351_vemc>;
+ 		vqmmc-supply = <&mt6351_vio18>;
+ 	};
++
++	/* microSD: aquí va el AOSP nuevo (GPT: metadata, super, userdata). Nodo como el DT de fábrica (IRQ 80,
++	 * 200 MHz, 4 bits, UHS hasta SDR104); relojes como mt6797.dtsi de taterli-6.18. */
++	mmc1: mmc@11240000 {
++		compatible = "mediatek,mt6797-mmc";
++		reg = <0 0x11240000 0 0x1000>;
++		interrupts = <GIC_SPI 80 IRQ_TYPE_LEVEL_LOW>;
++		clocks = <&topckgen CLK_TOP_MUX_MSDC30_1>, <&topckgen CLK_TOP_MUX_AXI>,
++			 <&infrasys CLK_INFRA_MSDC1>;
++		clock-names = "source", "hclk", "source_cg";
++		pinctrl-names = "default", "state_uhs";
++		pinctrl-0 = <&mmc1_pins_default>;
++		pinctrl-1 = <&mmc1_pins_uhs>;
++		bus-width = <4>;
++		max-frequency = <200000000>;
++		cap-sd-highspeed;
++		sd-uhs-sdr12;
++		sd-uhs-sdr25;
++		sd-uhs-sdr50;
++		sd-uhs-sdr104;
++		mediatek,pad-iocfg = <&pio 2>;	/* TDSEL/RDSEL/BIAS de los pads según el voltaje (iocfg_b) */
++		mediatek,power-cycle-on-probe;	/* fábrica deja la tarjeta a 1,8 V tras reinicio en caliente */
++		no-mmc;
++		no-sdio;
++		broken-cd;	/* GPIO67 lee alto con y sin tarjeta (comprobado en fábrica): sondeo */
++		vmmc-supply = <&mt6351_vmch>;
++		vqmmc-supply = <&mt6351_vmc>;
++	};
+ };
+ 
+ /* DVFS de CPU (mt6797-cpufreq). El DA9214 (i2c6 0x68; buck A = LL/L/CCI, buck B = big) lo maneja el propio driver
+-- 
+2.53.0
+

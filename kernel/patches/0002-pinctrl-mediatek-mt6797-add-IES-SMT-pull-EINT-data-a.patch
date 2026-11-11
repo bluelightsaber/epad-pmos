@@ -1,7 +1,7 @@
 From 9de4050f3d15973b251e28b267986996d2342963 Mon Sep 17 00:00:00 2001
 From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
 Date: Fri, 23 Oct 2026 00:19:59 +0200
-Subject: [PATCH 02/20] pinctrl: mediatek: mt6797: add IES/SMT/pull/EINT data;
+Subject: [PATCH 02/51] pinctrl: mediatek: mt6797: add IES/SMT/pull/EINT data;
  allow EINTs without a pin
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -12,7 +12,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  3 files changed, 580 insertions(+), 175 deletions(-)
 
 diff --git a/drivers/pinctrl/mediatek/mtk-eint.c b/drivers/pinctrl/mediatek/mtk-eint.c
-index 8b022545a..e7a8965bb 100644
+index 8b022545a3e9..e7a8965bba15 100644
 --- a/drivers/pinctrl/mediatek/mtk-eint.c
 +++ b/drivers/pinctrl/mediatek/mtk-eint.c
 @@ -273,8 +273,9 @@ static int mtk_eint_irq_request_resources(struct irq_data *d)
@@ -40,7 +40,7 @@ index 8b022545a..e7a8965bb 100644
  	gpiochip_unlock_as_irq(gpio_c, gpio_n);
  }
 diff --git a/drivers/pinctrl/mediatek/pinctrl-mt6797.c b/drivers/pinctrl/mediatek/pinctrl-mt6797.c
-index 53f240491..31e229b3f 100644
+index 53f240491259..31e229b3f8c1 100644
 --- a/drivers/pinctrl/mediatek/pinctrl-mt6797.c
 +++ b/drivers/pinctrl/mediatek/pinctrl-mt6797.c
 @@ -36,25 +36,428 @@ static const struct mtk_pin_field_calc mt6797_pin_do_range[] = {
@@ -473,7 +473,7 @@ index 53f240491..31e229b3f 100644
  
  static const struct of_device_id mt6797_pinctrl_of_match[] = {
 diff --git a/drivers/pinctrl/mediatek/pinctrl-mtk-mt6797.h b/drivers/pinctrl/mediatek/pinctrl-mtk-mt6797.h
-index 86ab78e80..80e2e4991 100644
+index 86ab78e80326..80e2e499124f 100644
 --- a/drivers/pinctrl/mediatek/pinctrl-mtk-mt6797.h
 +++ b/drivers/pinctrl/mediatek/pinctrl-mtk-mt6797.h
 @@ -213,7 +213,7 @@ static const struct mtk_pin_desc mtk_pins_mt6797[] = {
@@ -1997,3 +1997,6 @@ index 86ab78e80..80e2e4991 100644
  		DRV_GRP3,
  		MTK_FUNCTION(0, "GPIO261"),
  		MTK_FUNCTION(2, "LTE_JTAG_TRSTN"),
+-- 
+2.53.0
+

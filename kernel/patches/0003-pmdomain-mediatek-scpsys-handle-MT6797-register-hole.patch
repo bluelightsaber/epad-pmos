@@ -1,7 +1,7 @@
 From 886657adba5e648f27b94d82f9d4b60cbc1f809f Mon Sep 17 00:00:00 2001
 From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
 Date: Fri, 23 Oct 2026 00:20:00 +0200
-Subject: [PATCH 03/20] pmdomain: mediatek: scpsys: handle MT6797 register
+Subject: [PATCH 03/51] pmdomain: mediatek: scpsys: handle MT6797 register
  holes
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -10,7 +10,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  1 file changed, 16 insertions(+), 2 deletions(-)
 
 diff --git a/drivers/pmdomain/mediatek/mtk-scpsys.c b/drivers/pmdomain/mediatek/mtk-scpsys.c
-index efc8f276f..cf0c2773f 100644
+index efc8f276ffce..cf0c2773f6af 100644
 --- a/drivers/pmdomain/mediatek/mtk-scpsys.c
 +++ b/drivers/pmdomain/mediatek/mtk-scpsys.c
 @@ -89,6 +89,7 @@ enum clk_id {
@@ -80,3 +80,6 @@ index efc8f276f..cf0c2773f 100644
  	},
  };
  
+-- 
+2.53.0
+

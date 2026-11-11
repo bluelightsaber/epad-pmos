@@ -78,4 +78,4 @@ pmaports).
 
 ## Related
 
-- [epad-AOSP](https://github.com/bluelightsaber/epad-AOSP) — the parallel effort to run a modern Android.
+- [epad-AOSP](https://github.com/bluelightsaber/epad-AOSP) — Android 17 (AOSP) on the same kernel series; the author's daily system.

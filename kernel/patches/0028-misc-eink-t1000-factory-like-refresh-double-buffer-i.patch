@@ -1,0 +1,336 @@
+From dd4d75ba906fc3a1a9fc0dc092a17e1a0e670f3f Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Sun, 1 Nov 2026 01:38:57 +0100
+Subject: [PATCH 28/51] misc: eink-t1000: factory-like refresh, double buffer,
+ idle video off
+
+Match the factory SurfaceFlinger behaviour: the mode (1 mixed, 2
+navigation) is sent once and every update is 0x61 with 0. Repeating
+mode 2 per update makes later GCs stop painting.
+
+The T1000 reads the image over DSI during the whole paint, so frames
+changing mid-paint stretch it to several seconds. simpledrm now draws
+into a RAM copy and the driver copies the damaged rows to the scanout
+buffer only when HRDY is high, right before the next order.
+
+Wait for HRDY to drop after every order so the next one cannot pass
+wait_ready early, and keep DSI video running while active, stopping it
+after video_idle_ms of idle with HRDY high (video_settle_ms after
+restarting it). Paints are now a regular ~0.7 s, as on factory.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/gpu/drm/sysfb/simpledrm.c |  24 +++++-
+ drivers/misc/eink-t1000.c         | 126 ++++++++++++++++++++++++------
+ include/linux/eink-t1000.h        |   9 ++-
+ 3 files changed, 134 insertions(+), 25 deletions(-)
+
+diff --git a/drivers/gpu/drm/sysfb/simpledrm.c b/drivers/gpu/drm/sysfb/simpledrm.c
+index 14e17c47fd96..e3dd6835977a 100644
+--- a/drivers/gpu/drm/sysfb/simpledrm.c
++++ b/drivers/gpu/drm/sysfb/simpledrm.c
+@@ -3,6 +3,7 @@
+ #include <linux/aperture.h>
+ #include <linux/clk.h>
+ #include <linux/eink-t1000.h>
++#include <linux/vmalloc.h>
+ #include <linux/minmax.h>
+ #include <linux/of_address.h>
+ #include <linux/of_clk.h>
+@@ -584,6 +585,11 @@ static const u64 simpledrm_primary_plane_format_modifiers[] = {
+  * E-PAD: el controlador E-Ink T1000 solo pinta cuando se le ordena; tras copiar al framebuffer, pedirle un
+  * refresco si hubo daño (no hace nada sin T1000).
+  */
++static void simpledrm_vfree(void *p)
++{
++	vfree(p);
++}
++
+ static void simpledrm_primary_plane_helper_atomic_update(struct drm_plane *plane,
+ 							 struct drm_atomic_commit *state)
+ {
+@@ -593,7 +599,7 @@ static void simpledrm_primary_plane_helper_atomic_update(struct drm_plane *plane
+ 
+ 	drm_sysfb_plane_helper_atomic_update(plane, state);
+ 	if (drm_atomic_helper_damage_merged(old_plane_state, plane_state, &damage))
+-		t1000_request_refresh();
++		t1000_request_refresh(damage.y1, damage.y2);
+ }
+ 
+ static const struct drm_plane_helper_funcs simpledrm_primary_plane_helper_funcs = {
+@@ -805,6 +811,22 @@ static struct simpledrm_device *simpledrm_device_create(struct drm_driver *drv,
+ 			return ERR_PTR(-ENOMEM);
+ 
+ 		iosys_map_set_vaddr_iomem(&sysfb->fb_addr, screen_base);
++
++		/*
++		 * E-PAD: el T1000 lee la imagen por DSI durante todo el refresco y no termina si cambia a mitad. Se
++		 * dibuja en una copia en RAM y el driver del T1000 la pasa al framebuffer real solo cuando está libre,
++		 * justo antes de cada orden.
++		 */
++		if (IS_REACHABLE(CONFIG_EINK_T1000)) {
++			size_t len = (size_t)stride * height;
++			void *copy = vmalloc(len);
++
++			if (copy && !devm_add_action_or_reset(&pdev->dev, simpledrm_vfree, copy)) {
++				memcpy_fromio(copy, screen_base, len);
++				t1000_set_framebuffer(copy, screen_base, stride, height);
++				iosys_map_set_vaddr(&sysfb->fb_addr, copy);
++			}
++		}
+ 	}
+ 
+ 	/*
+diff --git a/drivers/misc/eink-t1000.c b/drivers/misc/eink-t1000.c
+index ee49b759495c..163f81a33c38 100644
+--- a/drivers/misc/eink-t1000.c
++++ b/drivers/misc/eink-t1000.c
+@@ -13,16 +13,18 @@
+  *
+  * DSI (opcional, propiedad mediatek,dsi-base): lk deja el DSI0 en modo vídeo (~55 fps leyendo el framebuffer de
+  * la DRAM continuamente, ~100 mA). El T1000 solo pinta al recibir la orden de modo (0x61) y lee la imagen del
+- * DSI mientras pinta (sin vídeo pinta basura). Con `video` = 0 (por defecto, parámetro video_idle_off) el vídeo
+- * se enciende solo durante cada orden de modo: vídeo → 2 fotogramas → orden → HRDY 0 → HRDY 1 → parar.
+- * `video` = 1: emisión continua como la deja lk.
++ * DSI mientras pinta (sin vídeo pinta basura). Con video_idle_off (por defecto) el vídeo se arranca al mandar una
++ * orden (video_settle_ms antes) y se para tras video_idle_ms sin órdenes y con HRDY = 1; pararlo tras cada orden
++ * alarga los pintados encadenados (fábrica no lo para nunca). Atributo sysfs `video` para forzarlo.
+  *
+  * OVL (opcional, propiedad mediatek,ovl-base): al cargar se apagan las capas que lk compone encima del
+  * framebuffer (el aviso de bootloader desbloqueado).
+  *
+  * Refresco automático (t1000_request_refresh(), lo llama simpledrm tras cada actualización con daño): agrupa las
+- * peticiones (refresh_delay_ms) y manda la orden de modo con el modo actual; si llegan más mientras pinta, repite
+- * al terminar. Atributo sysfs auto_refresh para desactivarlo (p. ej. una app que gestiona el T1000 ella misma).
++ * peticiones (refresh_delay_ms) y manda la orden de refresco (0x61 con 0); si llegan más mientras pinta, repite
++ * al terminar. Como en fábrica (traza de SurfaceFlinger en modo navegación): el modo (1 mixto, 2 navegación) se
++ * manda una sola vez al elegirlo y cada actualización es 0x61 con 0. Repetir 0x61 con 2 en cada actualización no
++ * mueve el panel y tras unas decenas el GC deja de pintar hasta la siguiente orden 0 o 1. Atributo sysfs auto_refresh para desactivarlo (p. ej. una app que gestiona el T1000 ella misma).
+  *
+  * A propósito NO implementa: escribir VCOM (0x42, calibración del panel), el modo 4 (mixed25 cuelga el
+  * T1000), dormir/sueño ligero (requieren manejar el pin de despertar), autorefresco ni actualización de
+@@ -38,6 +40,7 @@
+ #include <linux/module.h>
+ #include <linux/mutex.h>
+ #include <linux/of.h>
++#include <linux/spinlock.h>
+ #include <linux/uaccess.h>
+ #include <linux/workqueue.h>
+ 
+@@ -47,6 +50,7 @@
+ #define T1000_CMD_VCOM		0x42
+ #define T1000_CMD_GET_MODE	0x60
+ #define T1000_CMD_SET_MODE	0x61
++#define T1000_REFRESH		0x00	/* 0x61 con 0: actualizar (SurfaceFlinger lo manda así en todos los modos) */
+ #define T1000_CMD_SYSINFO	0xe0
+ 
+ #define T1000_IOC_GET_VCOM	0x43
+@@ -74,13 +78,15 @@ struct t1000 {
+ 	void __iomem *mmsys;	/* MMSYS_CONFIG: relojes del pipeline de display de lk */
+ 	u32 mm_cg[2];
+ 	bool video;
+-	unsigned int mode;	/* modo de refresco actual (0, 1 o 2) para el refresco automático */
++	unsigned int mode;	/* última orden de modo (0, 1 o 2) */
+ 	bool auto_refresh;
+ 	struct delayed_work refresh;
++	struct delayed_work video_off;
+ };
+ 
+ /* Solo hay un T1000; simpledrm lo encuentra por aquí. */
+ static struct t1000 *t1000_dev;
++static void t1000_fb_flush(void);
+ 
+ static unsigned int refresh_delay_ms = 30;
+ module_param(refresh_delay_ms, uint, 0644);
+@@ -101,7 +107,15 @@ MODULE_PARM_DESC(refresh_delay_ms, "espera para agrupar actualizaciones antes de
+ 
+ static bool video_idle_off = true;
+ module_param(video_idle_off, bool, 0644);
+-MODULE_PARM_DESC(video_idle_off, "parar el vídeo DSI en reposo al cargar el driver");
++MODULE_PARM_DESC(video_idle_off, "parar el vídeo DSI en reposo (video_idle_ms sin refrescos)");
++
++static unsigned int video_idle_ms = 3000;
++module_param(video_idle_ms, uint, 0644);
++MODULE_PARM_DESC(video_idle_ms, "reposo antes de parar el vídeo DSI");
++
++static unsigned int video_settle_ms = 100;
++module_param(video_settle_ms, uint, 0644);
++MODULE_PARM_DESC(video_settle_ms, "espera tras arrancar el vídeo DSI antes de la orden");
+ 
+ /* Modo vídeo (emisión continua del framebuffer) o modo comando (sin emisión). Con t->lock. */
+ static void t1000_dsi_video(struct t1000 *t, bool on)
+@@ -239,22 +253,26 @@ static int t1000_set_mode(struct t1000 *t, unsigned int mode)
+ 	ret = t1000_wait_ready(t, 5000);
+ 	if (ret)
+ 		goto out;
++	t1000_fb_flush();
+ 	if (t->dsi && !t->video) {
+ 		t1000_dsi_video(t, true);
+-		msleep(40);	/* dos fotogramas a ~55 fps */
+-		ret = t1000_write(t, cmd, sizeof(cmd));
+-		if (!ret) {
+-			unsigned int waited;
+-
+-			/* HRDY baja al empezar a pintar (si no baja en 200 ms, no hay refresco) */
+-			for (waited = 0; waited < 200 && gpiod_get_value_cansleep(t->hrdy); waited += 10)
+-				usleep_range(10000, 11000);
+-			t1000_wait_ready(t, 5000);
+-		}
+-		t1000_dsi_video(t, false);
+-	} else {
+-		ret = t1000_write(t, cmd, sizeof(cmd));
++		msleep(video_settle_ms);	/* varios fotogramas a ~55 fps */
++	}
++	ret = t1000_write(t, cmd, sizeof(cmd));
++	if (!ret) {
++		unsigned int waited;
++
++		/*
++		 * HRDY baja 10-20 ms después de la orden, al empezar a pintar (si no baja en 200 ms, no hay refresco).
++		 * Hay que esperarlo: si no, la orden siguiente ve HRDY = 1 y copia la imagen nueva justo cuando el T1000
++		 * empieza a leer la anterior, y el pintado se alarga varios segundos.
++		 */
++		for (waited = 0; waited < 200 && gpiod_get_value_cansleep(t->hrdy); waited += 10)
++			usleep_range(10000, 11000);
+ 	}
++	/* El vídeo sigue mientras haya actividad y se para tras video_idle_ms de reposo (t1000_video_off_work). */
++	if (t->dsi && t->video && video_idle_off)
++		mod_delayed_work(system_unbound_wq, &t->video_off, msecs_to_jiffies(video_idle_ms));
+ 	if (!ret && mode <= 0x02)
+ 		t->mode = mode;
+ out:
+@@ -262,6 +280,18 @@ static int t1000_set_mode(struct t1000 *t, unsigned int mode)
+ 	return ret;
+ }
+ 
++static void t1000_video_off_work(struct work_struct *work)
++{
++	struct t1000 *t = container_of(to_delayed_work(work), struct t1000, video_off);
++
++	mutex_lock(&t->lock);
++	if (!gpiod_get_value_cansleep(t->hrdy))	/* aún pinta: sin vídeo no termina */
++		mod_delayed_work(system_unbound_wq, &t->video_off, msecs_to_jiffies(500));
++	else if (t->video)
++		t1000_dsi_video(t, false);
++	mutex_unlock(&t->lock);
++}
++
+ static void t1000_refresh_work(struct work_struct *work)
+ {
+ 	struct t1000 *t = container_of(to_delayed_work(work), struct t1000, refresh);
+@@ -269,15 +299,59 @@ static void t1000_refresh_work(struct work_struct *work)
+ 
+ 	if (t->asleep || !t->auto_refresh)
+ 		return;
+-	ret = t1000_set_mode(t, t->mode);
++	ret = t1000_set_mode(t, T1000_REFRESH);
+ 	if (ret)
+ 		dev_dbg(&t->client->dev, "refresco automático: %d\n", ret);
+ }
+ 
+-void t1000_request_refresh(void)
++/*
++ * Doble búfer con simpledrm (t1000_set_framebuffer): simpledrm dibuja en src (RAM) y aquí se copian las filas
++ * cambiadas al framebuffer que lee el display (dst) solo con el T1000 libre, antes de cada orden. El T1000 lee la
++ * imagen por DSI durante todo el refresco: si cambia a mitad, HRDY no vuelve a 1 nunca.
++ */
++static DEFINE_SPINLOCK(t1000_fb_lock);
++static void *t1000_fb_src;
++static void __iomem *t1000_fb_dst;
++static unsigned int t1000_fb_pitch, t1000_fb_height;
++static unsigned int t1000_fb_y1 = UINT_MAX, t1000_fb_y2;
++
++void t1000_set_framebuffer(void *src, void __iomem *dst, unsigned int pitch, unsigned int height)
++{
++	spin_lock(&t1000_fb_lock);
++	t1000_fb_src = src;
++	t1000_fb_dst = dst;
++	t1000_fb_pitch = pitch;
++	t1000_fb_height = height;
++	spin_unlock(&t1000_fb_lock);
++}
++EXPORT_SYMBOL_GPL(t1000_set_framebuffer);
++
++/* Con t->lock y el T1000 libre. */
++static void t1000_fb_flush(void)
++{
++	unsigned int y1, y2;
++
++	spin_lock(&t1000_fb_lock);
++	y1 = t1000_fb_y1;
++	y2 = min(t1000_fb_y2, t1000_fb_height);
++	t1000_fb_y1 = UINT_MAX;
++	t1000_fb_y2 = 0;
++	spin_unlock(&t1000_fb_lock);
++
++	if (t1000_fb_src && y1 < y2)
++		memcpy_toio(t1000_fb_dst + y1 * t1000_fb_pitch, t1000_fb_src + y1 * t1000_fb_pitch,
++			    (y2 - y1) * t1000_fb_pitch);
++}
++
++void t1000_request_refresh(unsigned int y1, unsigned int y2)
+ {
+ 	struct t1000 *t = READ_ONCE(t1000_dev);
+ 
++	spin_lock(&t1000_fb_lock);
++	t1000_fb_y1 = min(t1000_fb_y1, y1);
++	t1000_fb_y2 = max(t1000_fb_y2, y2);
++	spin_unlock(&t1000_fb_lock);
++
+ 	/* si ya hay uno en cola no hace nada; si está pintando, queda en cola para después */
+ 	if (t && t->auto_refresh)
+ 		queue_delayed_work(system_unbound_wq, &t->refresh, msecs_to_jiffies(refresh_delay_ms));
+@@ -578,6 +652,7 @@ static void t1000_refresh_stop(void *data)
+ 
+ 	WRITE_ONCE(t1000_dev, NULL);
+ 	cancel_delayed_work_sync(&t->refresh);
++	cancel_delayed_work_sync(&t->video_off);
+ }
+ 
+ static void t1000_misc_deregister(void *misc)
+@@ -659,6 +734,7 @@ static int t1000_probe(struct i2c_client *client)
+ 	}
+ 
+ 	INIT_DELAYED_WORK(&t->refresh, t1000_refresh_work);
++	INIT_DELAYED_WORK(&t->video_off, t1000_video_off_work);
+ 	t->auto_refresh = true;
+ 	WRITE_ONCE(t1000_dev, t);
+ 	ret = devm_add_action_or_reset(dev, t1000_refresh_stop, t);
+@@ -706,6 +782,12 @@ static int t1000_suspend(struct device *dev)
+ 	int ret;
+ 
+ 	cancel_delayed_work_sync(&t->refresh);
++	cancel_delayed_work_sync(&t->video_off);
++	if (t->dsi && t->video && video_idle_off) {
++		mutex_lock(&t->lock);
++		t1000_dsi_video(t, false);
++		mutex_unlock(&t->lock);
++	}
+ 	t->pm_slept = false;
+ 	if (!pm_sleep || t->asleep) {
+ 		t1000_mm_gate(t);
+diff --git a/include/linux/eink-t1000.h b/include/linux/eink-t1000.h
+index 1b4e2012bc5d..7d0f3226ace3 100644
+--- a/include/linux/eink-t1000.h
++++ b/include/linux/eink-t1000.h
+@@ -3,10 +3,15 @@
+ #ifndef _LINUX_EINK_T1000_H
+ #define _LINUX_EINK_T1000_H
+ 
++#include <linux/compiler_types.h>
++
+ #if IS_REACHABLE(CONFIG_EINK_T1000)
+-void t1000_request_refresh(void);
++void t1000_set_framebuffer(void *src, void __iomem *dst, unsigned int pitch, unsigned int height);
++void t1000_request_refresh(unsigned int y1, unsigned int y2);
+ #else
+-static inline void t1000_request_refresh(void) { }
++static inline void t1000_set_framebuffer(void *src, void __iomem *dst, unsigned int pitch,
++					 unsigned int height) { }
++static inline void t1000_request_refresh(unsigned int y1, unsigned int y2) { }
+ #endif
+ 
+ #endif
+-- 
+2.53.0
+

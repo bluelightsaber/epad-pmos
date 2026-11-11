@@ -1,0 +1,225 @@
+From 6255ae34991fb8706e14ae0ce739310507471994 Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Mon, 2 Nov 2026 01:16:52 +0100
+Subject: [PATCH 35/51] drm/mediatek: add MT6797 (RDMA0 -> DSI0), larb link,
+ damage for E-Ink
+
+- MT6797 main path RDMA0 -> DSI0 and its mutex compatible.
+- RDMA: optional mediatek,larb phandle; without an IOMMU nothing else
+  powers the SMI larb, so the RDMA takes a runtime PM reference on it.
+- Planes accept FB_DAMAGE_CLIPS, framebuffers support DIRTYFB, and the
+  damaged rows are passed to the E-PAD T1000 controller (eink-t1000).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/gpu/drm/mediatek/mtk_disp_rdma.c | 41 +++++++++++++++++++++++-
+ drivers/gpu/drm/mediatek/mtk_drm_drv.c   | 17 +++++++++-
+ drivers/gpu/drm/mediatek/mtk_plane.c     | 10 ++++++
+ 3 files changed, 66 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/gpu/drm/mediatek/mtk_disp_rdma.c b/drivers/gpu/drm/mediatek/mtk_disp_rdma.c
+index c9d41d75e7f2..0883188399b4 100644
+--- a/drivers/gpu/drm/mediatek/mtk_disp_rdma.c
++++ b/drivers/gpu/drm/mediatek/mtk_disp_rdma.c
+@@ -9,6 +9,7 @@
+ #include <linux/component.h>
+ #include <linux/module.h>
+ #include <linux/of.h>
++#include <linux/of_platform.h>
+ #include <linux/platform_device.h>
+ #include <linux/pm_runtime.h>
+ #include <linux/soc/mediatek/mtk-cmdq.h>
+@@ -86,6 +87,7 @@ struct mtk_disp_rdma {
+ 	void				(*vblank_cb)(void *data);
+ 	void				*vblank_cb_data;
+ 	u32				fifo_size;
++	struct device			*larb_dev;
+ };
+ 
+ static irqreturn_t mtk_disp_rdma_irq_handler(int irq, void *dev_id)
+@@ -159,8 +161,18 @@ size_t mtk_rdma_get_num_formats(struct device *dev)
+ int mtk_rdma_clk_enable(struct device *dev)
+ {
+ 	struct mtk_disp_rdma *rdma = dev_get_drvdata(dev);
++	int ret;
+ 
+-	return clk_prepare_enable(rdma->clk);
++	/* without an IOMMU nobody else powers the SMI larb this engine reads through */
++	if (rdma->larb_dev) {
++		ret = pm_runtime_resume_and_get(dev);
++		if (ret)
++			return ret;
++	}
++	ret = clk_prepare_enable(rdma->clk);
++	if (ret && rdma->larb_dev)
++		pm_runtime_put(dev);
++	return ret;
+ }
+ 
+ void mtk_rdma_clk_disable(struct device *dev)
+@@ -168,6 +180,8 @@ void mtk_rdma_clk_disable(struct device *dev)
+ 	struct mtk_disp_rdma *rdma = dev_get_drvdata(dev);
+ 
+ 	clk_disable_unprepare(rdma->clk);
++	if (rdma->larb_dev)
++		pm_runtime_put(dev);
+ }
+ 
+ void mtk_rdma_start(struct device *dev)
+@@ -313,6 +327,7 @@ static int mtk_disp_rdma_probe(struct platform_device *pdev)
+ {
+ 	struct device *dev = &pdev->dev;
+ 	struct mtk_disp_rdma *priv;
++	struct device_node *larb_node;
+ 	int irq;
+ 	int ret;
+ 
+@@ -345,6 +360,24 @@ static int mtk_disp_rdma_probe(struct platform_device *pdev)
+ 	if (ret && (ret != -EINVAL))
+ 		return dev_err_probe(dev, ret, "Failed to get rdma fifo size\n");
+ 
++	larb_node = of_parse_phandle(dev->of_node, "mediatek,larb", 0);
++	if (larb_node) {
++		struct platform_device *larb_pdev = of_find_device_by_node(larb_node);
++
++		of_node_put(larb_node);
++		if (!larb_pdev || !larb_pdev->dev.driver) {
++			if (larb_pdev)
++				put_device(&larb_pdev->dev);
++			return -EPROBE_DEFER;
++		}
++		priv->larb_dev = &larb_pdev->dev;
++		if (!device_link_add(dev, priv->larb_dev,
++				     DL_FLAG_PM_RUNTIME | DL_FLAG_STATELESS)) {
++			put_device(priv->larb_dev);
++			return dev_err_probe(dev, -EINVAL, "Failed to link larb\n");
++		}
++	}
++
+ 	/* Disable and clear pending interrupts */
+ 	writel(0x0, priv->regs + DISP_REG_RDMA_INT_ENABLE);
+ 	writel(0x0, priv->regs + DISP_REG_RDMA_INT_STATUS);
+@@ -371,9 +404,15 @@ static int mtk_disp_rdma_probe(struct platform_device *pdev)
+ 
+ static void mtk_disp_rdma_remove(struct platform_device *pdev)
+ {
++	struct mtk_disp_rdma *priv = platform_get_drvdata(pdev);
++
+ 	component_del(&pdev->dev, &mtk_disp_rdma_component_ops);
+ 
+ 	pm_runtime_disable(&pdev->dev);
++	if (priv->larb_dev) {
++		device_link_remove(&pdev->dev, priv->larb_dev);
++		put_device(priv->larb_dev);
++	}
+ }
+ 
+ static const struct mtk_disp_rdma_data mt2701_rdma_driver_data = {
+diff --git a/drivers/gpu/drm/mediatek/mtk_drm_drv.c b/drivers/gpu/drm/mediatek/mtk_drm_drv.c
+index dc8e3e917dd7..939cf490b641 100644
+--- a/drivers/gpu/drm/mediatek/mtk_drm_drv.c
++++ b/drivers/gpu/drm/mediatek/mtk_drm_drv.c
+@@ -50,7 +50,7 @@ mtk_drm_mode_fb_create(struct drm_device *dev,
+ 	if (info->num_planes != 1)
+ 		return ERR_PTR(-EINVAL);
+ 
+-	return drm_gem_fb_create(dev, file, info, cmd);
++	return drm_gem_fb_create_with_dirty(dev, file, info, cmd);
+ }
+ 
+ static const struct drm_mode_config_funcs mtk_drm_mode_config_funcs = {
+@@ -111,6 +111,11 @@ static const unsigned int mt2712_mtk_ddp_third[] = {
+ 	DDP_COMPONENT_PWM2,
+ };
+ 
++static unsigned int mt6797_mtk_ddp_main[] = {
++	DDP_COMPONENT_RDMA0,
++	DDP_COMPONENT_DSI0,
++};
++
+ static unsigned int mt8167_mtk_ddp_main[] = {
+ 	DDP_COMPONENT_OVL0,
+ 	DDP_COMPONENT_COLOR0,
+@@ -259,6 +264,12 @@ static const struct mtk_mmsys_driver_data mt2712_mmsys_driver_data = {
+ 	.mmsys_dev_num = 1,
+ };
+ 
++static const struct mtk_mmsys_driver_data mt6797_mmsys_driver_data = {
++	.main_path = mt6797_mtk_ddp_main,
++	.main_len = ARRAY_SIZE(mt6797_mtk_ddp_main),
++	.mmsys_dev_num = 1,
++};
++
+ static const struct mtk_mmsys_driver_data mt8167_mmsys_driver_data = {
+ 	.main_path = mt8167_mtk_ddp_main,
+ 	.main_len = ARRAY_SIZE(mt8167_mtk_ddp_main),
+@@ -338,6 +349,8 @@ static const struct of_device_id mtk_drm_of_ids[] = {
+ 	  .data = &mt7623_mmsys_driver_data},
+ 	{ .compatible = "mediatek,mt2712-mmsys",
+ 	  .data = &mt2712_mmsys_driver_data},
++	{ .compatible = "mediatek,mt6797-mmsys",
++	  .data = &mt6797_mmsys_driver_data},
+ 	{ .compatible = "mediatek,mt8167-mmsys",
+ 	  .data = &mt8167_mmsys_driver_data},
+ 	{ .compatible = "mediatek,mt8173-mmsys",
+@@ -744,6 +757,8 @@ static const struct of_device_id mtk_ddp_comp_dt_ids[] = {
+ 	  .data = (void *)MTK_DISP_MUTEX },
+ 	{ .compatible = "mediatek,mt2712-disp-mutex",
+ 	  .data = (void *)MTK_DISP_MUTEX },
++	{ .compatible = "mediatek,mt6797-disp-mutex",
++	  .data = (void *)MTK_DISP_MUTEX },
+ 	{ .compatible = "mediatek,mt8167-disp-mutex",
+ 	  .data = (void *)MTK_DISP_MUTEX },
+ 	{ .compatible = "mediatek,mt8173-disp-mutex",
+diff --git a/drivers/gpu/drm/mediatek/mtk_plane.c b/drivers/gpu/drm/mediatek/mtk_plane.c
+index 2598c8edb443..8c7ea757bed6 100644
+--- a/drivers/gpu/drm/mediatek/mtk_plane.c
++++ b/drivers/gpu/drm/mediatek/mtk_plane.c
+@@ -8,12 +8,14 @@
+ #include <drm/drm_atomic_helper.h>
+ #include <drm/drm_atomic_uapi.h>
+ #include <drm/drm_blend.h>
++#include <drm/drm_damage_helper.h>
+ #include <drm/drm_fourcc.h>
+ #include <drm/drm_framebuffer.h>
+ #include <drm/drm_gem_atomic_helper.h>
+ #include <drm/drm_gem_dma_helper.h>
+ #include <drm/drm_print.h>
+ #include <linux/align.h>
++#include <linux/eink-t1000.h>
+ 
+ #include "mtk_crtc.h"
+ #include "mtk_ddp_comp.h"
+@@ -281,7 +283,9 @@ static void mtk_plane_atomic_update(struct drm_plane *plane,
+ {
+ 	struct drm_plane_state *new_state = drm_atomic_get_new_plane_state(state,
+ 									   plane);
++	struct drm_plane_state *old_state = drm_atomic_get_old_plane_state(state, plane);
+ 	struct mtk_plane_state *mtk_plane_state = to_mtk_plane_state(new_state);
++	struct drm_rect damage;
+ 
+ 	if (!new_state->crtc || WARN_ON(!new_state->fb))
+ 		return;
+@@ -294,6 +298,10 @@ static void mtk_plane_atomic_update(struct drm_plane *plane,
+ 	mtk_plane_update_new_state(new_state, mtk_plane_state);
+ 	wmb(); /* Make sure the above parameters are set before update */
+ 	mtk_plane_state->pending.dirty = true;
++
++	/* E-Ink (E-PAD T1000): the controller only repaints the rows it is told about */
++	if (drm_atomic_helper_damage_merged(old_state, new_state, &damage))
++		t1000_request_refresh(damage.y1, damage.y2);
+ }
+ 
+ static const struct drm_plane_helper_funcs mtk_plane_helper_funcs = {
+@@ -343,6 +351,8 @@ int mtk_plane_init(struct drm_device *dev, struct drm_plane *plane,
+ 		return err;
+ 	}
+ 
++	drm_plane_enable_fb_damage_clips(plane);
++
+ 	if (supported_rotations) {
+ 		err = drm_plane_create_rotation_property(plane,
+ 							 DRM_MODE_ROTATE_0,
+-- 
+2.53.0
+

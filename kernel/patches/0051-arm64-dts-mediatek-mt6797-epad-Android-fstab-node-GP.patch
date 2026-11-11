@@ -1,0 +1,148 @@
+From 3be1d6c47f24b4f727b84c73c2750f638e3059af Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 20:22:15 +0100
+Subject: [PATCH 51/51] arm64: dts: mediatek: mt6797-epad: Android fstab node,
+ GPS and audio; panel rotation
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../boot/dts/mediatek/mt6797-epad-drm.dts     |  2 +
+ arch/arm64/boot/dts/mediatek/mt6797-epad.dts  | 81 +++++++++++++++++++
+ 2 files changed, 83 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/mediatek/mt6797-epad-drm.dts b/arch/arm64/boot/dts/mediatek/mt6797-epad-drm.dts
+index 65ebccd81204..20bd6d1fd08a 100644
+--- a/arch/arm64/boot/dts/mediatek/mt6797-epad-drm.dts
++++ b/arch/arm64/boot/dts/mediatek/mt6797-epad-drm.dts
+@@ -74,6 +74,8 @@ dsi0: dsi@1401c000 {
+ 		panel@0 {
+ 			compatible = "eink,t1000-dsi";
+ 			reg = <0>;
++			/* como el simple-framebuffer: LEFT_UP (arriba de la vista vertical = columna 0 del panel) */
++			rotation = <270>;
+ 
+ 			port {
+ 				panel_in: endpoint {
+diff --git a/arch/arm64/boot/dts/mediatek/mt6797-epad.dts b/arch/arm64/boot/dts/mediatek/mt6797-epad.dts
+index a402b9c074f9..9c8f5cffbe99 100644
+--- a/arch/arm64/boot/dts/mediatek/mt6797-epad.dts
++++ b/arch/arm64/boot/dts/mediatek/mt6797-epad.dts
+@@ -62,6 +62,19 @@ memory@40000000 {
+ 		reg = <0 0x40000000 1 0x00000000>;
+ 	};
+ 
++	/*
++	 * Android: dispositivo de arranque para /dev/block/by-name (fs_mgr lo lee de aquí si no está en la línea de
++	 * órdenes; lk solo conserva ~99 caracteres de la línea de la boot.img). La eMMC sigue siendo de fábrica.
++	 */
++	firmware {
++		android {
++			compatible = "android,firmware";
++			/* disco de AOSP (particiones epad_metadata, super, epad_data): eMMC 11230000.mmc (p31-p33);
++			 * la microSD 11240000.mmc queda de reserva (renombrar allí las particiones igual) */
++			boot_devices = "11230000.mmc";
++		};
++	};
++
+ 	chosen {
+ 		#address-cells = <2>;
+ 		#size-cells = <2>;
+@@ -77,6 +90,9 @@ framebuffer@bdc00000 {
+ 			height = <1404>;
+ 			stride = <7552>;
+ 			format = "a8r8g8b8";
++			/* panel apaisado montado para uso en vertical: la fila 0 cae en el borde izquierdo (LEFT_UP;
++			 * con 90 Android salía del revés, comprobado por el usuario en aosp-20) */
++			rotation = <270>;
+ 			/* el motor de display que lee este fb (y lo pasa al T1000) vive en el dominio MM */
+ 			power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>;
+ 			status = "okay";
+@@ -113,6 +129,13 @@ bluetooth {
+ 		mediatek,wmt = <&wmt>;
+ 	};
+ 
++	gps {
++		compatible = "mediatek,mt6797-gps";
++		mediatek,wmt = <&wmt>;
++		/* LNA externo en GPIO141 (gpslna de fábrica; WMT_SOC.cfg: wmt_gps_lna_enable = 0 → pin del AP) */
++		lna-gpios = <&pio 141 GPIO_ACTIVE_HIGH>;
++	};
++
+ 	reserved-memory {
+ 		#address-cells = <2>;
+ 		#size-cells = <2>;
+@@ -353,6 +376,55 @@ battery-meter {
+ 			compatible = "mediatek,mt6351-battery";
+ 			mediatek,u2phy = <&u2port0>;
+ 		};
++
++		/* Códec de audio del MT6351 (altavoz por amplificador externo, micrófono) */
++		mt6351_snd: audio-codec {
++			compatible = "mediatek,mt6351-sound";
++		};
++	};
++
++	/* Audio: AFE del MT6797 + códec MT6351 por los pines AUD_* (en fábrica: tarjeta mt-snd-card, altavoz y
++	 * micrófono comprobados). El amplificador del altavoz lo enciende GPIO71 (en fábrica, solo mientras suena). */
++	afe: audio-controller@11220000 {
++		compatible = "mediatek,mt6797-audio";
++		reg = <0 0x11220000 0 0x1000>;
++		interrupts = <GIC_SPI 151 IRQ_TYPE_LEVEL_LOW>;
++		power-domains = <&scpsys MT6797_POWER_DOMAIN_AUDIO>;
++		clocks = <&infrasys CLK_INFRA_AUDIO>,
++			 <&infrasys CLK_INFRA_AUDIO_26M>,
++			 <&infrasys CLK_INFRA_AUDIO_26M_PAD_TOP>,
++			 <&topckgen CLK_TOP_MUX_AUDIO>,
++			 <&topckgen CLK_TOP_MUX_AUD_INTBUS>,
++			 <&topckgen CLK_TOP_SYSPLL3_D4>,
++			 <&topckgen CLK_TOP_SYSPLL1_D4>,
++			 <&clk26m>;
++		clock-names = "infra_sys_audio_clk",
++			      "infra_sys_audio_26m",
++			      "mtkaif_26m_clk",
++			      "top_mux_audio",
++			      "top_mux_aud_intbus",
++			      "top_sys_pll3_d4",
++			      "top_sys_pll1_d4",
++			      "top_clk26m_clk";
++		pinctrl-names = "default";
++		pinctrl-0 = <&epad_aud_pins>;
++	};
++
++	/* Amplificador del altavoz (GPIO71): como en fábrica, encendido solo mientras suena (DAPM). Le llega la
++	 * salida de auriculares del MT6351 en modo «Audio Playback». */
++	spk_amp: audio-amplifier {
++		compatible = "simple-audio-amplifier";
++		enable-gpios = <&pio 71 GPIO_ACTIVE_HIGH>;
++		sound-name-prefix = "Amp";
++	};
++
++	sound {
++		compatible = "mediatek,mt6797-mt6351-sound";
++		mediatek,audio-codec = <&mt6351_snd>;
++		mediatek,platform = <&afe>;
++		audio-aux-devs = <&spk_amp>;
++		audio-routing = "Amp INL", "Headphone L",
++				"Amp INR", "Headphone R";
+ 	};
+ };
+ 
+@@ -385,6 +457,15 @@ &pio {
+ 	/* GPIO 236 = HRDY del T1000 (1 = libre). Necesita el buffer de entrada activo: con IES = 0
+ 	 * se lee siempre 0 (así lo dejaba el kernel 3.18 de Linaro). */
+ 	/* IRQ del táctil (GPIO85 = EINT8) y del lápiz (GPIO86 = EINT9): modo EINT con pull-up, como en Android. */
++	/* AFE <-> MT6351 (reloj y datos de bajada/subida) */
++	epad_aud_pins: epad-aud {
++		pins-aud {
++			pinmux = <MT6797_GPIO146__FUNC_AUD_CLK_MOSI>,
++				 <MT6797_GPIO147__FUNC_AUD_DAT_MISO>,
++				 <MT6797_GPIO148__FUNC_AUD_DAT_MOSI>;
++		};
++	};
++
+ 	epad_touch_pins: epad-touch {
+ 		irq {
+ 			pinmux = <MT6797_GPIO85__FUNC_EINT8>;
+-- 
+2.53.0
+

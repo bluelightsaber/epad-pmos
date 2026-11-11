@@ -1,0 +1,35 @@
+From ddff2b3411536b3a3eba7cfd3761bb62fffa1d66 Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 00:17:32 +0100
+Subject: [PATCH 45/51] wifi: mt6797: do not hold a wakeup source for CNM
+ timers
+
+The root timer held "WLAN Timer" whenever the next CNM timer was due
+within 5 s. While associated some short timer is always pending, so
+the wakeup source never dropped and the system could not suspend.
+Timers that expire during suspend simply run on resume.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../net/wireless/mediatek/mt6797/include/mgmt/cnm_timer.h    | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/cnm_timer.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/cnm_timer.h
+index 8123c647b19f..b4f6266a6010 100644
+--- a/drivers/net/wireless/mediatek/mt6797/include/mgmt/cnm_timer.h
++++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/cnm_timer.h
+@@ -110,7 +110,10 @@
+ 
+ #define MGMT_MAX_TIMEOUT_INTERVAL       ((UINT_32)0x7fffffff)
+ 
+-#define WAKE_LOCK_MAX_TIME              5	/* Unit: sec */
++/* E-PAD: 0 = the root timer never holds a wakeup source. With 5 s some short CNM timer is always pending
++ * while associated, so "WLAN Timer" stayed active for good and the system never suspended. Timers that
++ * expire during suspend run on resume. */
++#define WAKE_LOCK_MAX_TIME              0	/* Unit: sec */
+ 
+ #define OBSS_SCAN_MIN_INTERVAL  10	/* In unit of sec */
+ /* If WAKE_LOCK_MAX_TIME is too large, the whole system may always keep awake
+-- 
+2.53.0
+

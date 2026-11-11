@@ -1,7 +1,7 @@
 From 0532303600df3f92ffb64dd48fba6cf432a23e84 Mon Sep 17 00:00:00 2001
 From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
 Date: Fri, 23 Oct 2026 00:20:05 +0200
-Subject: [PATCH 20/20] arm64: dts: mediatek: add Eewrite E-PAD (Epad_PRO)
+Subject: [PATCH 20/51] arm64: dts: mediatek: add Eewrite E-PAD (Epad_PRO)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
@@ -11,7 +11,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  create mode 100644 arch/arm64/boot/dts/mediatek/mt6797-epad.dts
 
 diff --git a/arch/arm64/boot/dts/mediatek/Makefile b/arch/arm64/boot/dts/mediatek/Makefile
-index a86fb313b..449e60e48 100644
+index a86fb313b1a9..449e60e487a7 100644
 --- a/arch/arm64/boot/dts/mediatek/Makefile
 +++ b/arch/arm64/boot/dts/mediatek/Makefile
 @@ -188,3 +188,4 @@ DTC_FLAGS_mt7988a-bananapi-bpi-r4-2g5 := -@
@@ -21,7 +21,7 @@ index a86fb313b..449e60e48 100644
 +dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-epad.dtb
 diff --git a/arch/arm64/boot/dts/mediatek/mt6797-epad.dts b/arch/arm64/boot/dts/mediatek/mt6797-epad.dts
 new file mode 100644
-index 000000000..f3007607d
+index 000000000000..f3007607d9d2
 --- /dev/null
 +++ b/arch/arm64/boot/dts/mediatek/mt6797-epad.dts
 @@ -0,0 +1,790 @@
@@ -815,3 +815,6 @@ index 000000000..f3007607d
 +		mediatek,pwrap = <&pwrap>;
 +	};
 +};
+-- 
+2.53.0
+

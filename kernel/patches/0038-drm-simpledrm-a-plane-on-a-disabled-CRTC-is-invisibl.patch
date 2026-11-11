@@ -1,0 +1,58 @@
+From e2bfea6e4d78ba83e2682e33a1850936c6728878 Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Mon, 2 Nov 2026 07:38:20 +0100
+Subject: [PATCH 38/51] drm/simpledrm: a plane on a disabled CRTC is invisible,
+ not an error
+
+drm_hwcomposer turns the display off with ACTIVE = 0 and MODE_ID = 0 but keeps the
+plane attached. drm_atomic_helper_check_plane_state() rejected that, the CRTC was
+never disabled and the T1000 sleep image never shown.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/gpu/drm/sysfb/simpledrm.c | 22 +++++++++++++++++++++-
+ 1 file changed, 21 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/drm/sysfb/simpledrm.c b/drivers/gpu/drm/sysfb/simpledrm.c
+index 0f9ea8ffbbd2..489c799359b0 100644
+--- a/drivers/gpu/drm/sysfb/simpledrm.c
++++ b/drivers/gpu/drm/sysfb/simpledrm.c
+@@ -603,6 +603,26 @@ static void simpledrm_primary_plane_helper_atomic_update(struct drm_plane *plane
+ 		t1000_request_refresh(damage.y1, damage.y2);
+ }
+ 
++/*
++ * E-PAD: drm_hwcomposer apaga la pantalla (Android en reposo) con ACTIVE = 0 y MODE_ID = 0 sin soltar el plano;
++ * drm_atomic_helper_check_plane_state() lo rechaza («Cannot update plane of a disabled CRTC») y la CRTC nunca
++ * se desactiva, así que no salía la pantalla de reposo. Con la CRTC apagada el plano cuenta como invisible.
++ */
++static int simpledrm_primary_plane_helper_atomic_check(struct drm_plane *plane,
++						       struct drm_atomic_commit *state)
++{
++	struct drm_plane_state *plane_state = drm_atomic_get_new_plane_state(state, plane);
++	struct drm_crtc_state *crtc_state = NULL;
++
++	if (plane_state->crtc)
++		crtc_state = drm_atomic_get_new_crtc_state(state, plane_state->crtc);
++	if (crtc_state && !crtc_state->enable) {
++		plane_state->visible = false;
++		return 0;
++	}
++	return drm_sysfb_plane_helper_atomic_check(plane, state);
++}
++
+ /* E-PAD: la tinta conserva la imagen; no borrar la copia a negro al desactivar el plano. */
+ static void simpledrm_primary_plane_helper_atomic_disable(struct drm_plane *plane,
+ 							  struct drm_atomic_commit *state)
+@@ -614,7 +634,7 @@ static void simpledrm_primary_plane_helper_atomic_disable(struct drm_plane *plan
+ static const struct drm_plane_helper_funcs simpledrm_primary_plane_helper_funcs = {
+ 	.begin_fb_access = drm_sysfb_plane_helper_begin_fb_access,
+ 	.end_fb_access = drm_gem_end_shadow_fb_access,
+-	.atomic_check = drm_sysfb_plane_helper_atomic_check,
++	.atomic_check = simpledrm_primary_plane_helper_atomic_check,
+ 	.atomic_update = simpledrm_primary_plane_helper_atomic_update,
+ 	.atomic_disable = simpledrm_primary_plane_helper_atomic_disable,
+ 	.get_scanout_buffer = drm_sysfb_plane_helper_get_scanout_buffer,
+-- 
+2.53.0
+

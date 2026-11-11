@@ -1,0 +1,47 @@
+From f4f50d12902b69975e95e48053703225fe17f9f4 Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Sat, 31 Oct 2026 21:49:42 +0100
+Subject: [PATCH 24/51] pmdomain: mediatek: scpsys: keep the MT6797 display
+ domain always on
+
+The display pipeline set up by the bootloader has no driver yet; turning the
+domain off (also on suspend) loses it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/pmdomain/mediatek/mtk-scpsys.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/drivers/pmdomain/mediatek/mtk-scpsys.c b/drivers/pmdomain/mediatek/mtk-scpsys.c
+index cf0c2773f6af..3283bfb1bf3b 100644
+--- a/drivers/pmdomain/mediatek/mtk-scpsys.c
++++ b/drivers/pmdomain/mediatek/mtk-scpsys.c
+@@ -25,6 +25,7 @@
+ 
+ #define MTK_SCPD_ACTIVE_WAKEUP		BIT(0)
+ #define MTK_SCPD_FWAIT_SRAM		BIT(1)
++#define MTK_SCPD_ALWAYS_ON		BIT(2)
+ #define MTK_SCPD_CAPS(_scpd, _x)	((_scpd)->data->caps & (_x))
+ 
+ #define SPM_VDE_PWR_CON			0x0210
+@@ -517,6 +518,8 @@ static struct scp *init_scp(struct platform_device *pdev,
+ 		genpd->power_on = scpsys_power_on;
+ 		if (MTK_SCPD_CAPS(scpd, MTK_SCPD_ACTIVE_WAKEUP))
+ 			genpd->flags |= GENPD_FLAG_ACTIVE_WAKEUP;
++		if (MTK_SCPD_CAPS(scpd, MTK_SCPD_ALWAYS_ON))
++			genpd->flags |= GENPD_FLAG_ALWAYS_ON;
+ 	}
+ 
+ 	return scp;
+@@ -797,6 +800,8 @@ static const struct scp_domain_data scp_domain_data_mt6797[] = {
+ 		.sram_pdn_ack_bits = GENMASK(12, 12),
+ 		.clk_id = {CLK_MM},
+ 		.bus_prot_mask = (BIT(1) | BIT(2)),
++		/* el pipeline de display que dejó lk (sin driver) se pierde si se apaga, también al suspender */
++		.caps = MTK_SCPD_ALWAYS_ON,
+ 	},
+ 	[MT6797_POWER_DOMAIN_AUDIO] = {
+ 		.name = "audio",
+-- 
+2.53.0
+

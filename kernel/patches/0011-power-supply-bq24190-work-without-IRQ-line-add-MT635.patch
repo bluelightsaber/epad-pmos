@@ -1,7 +1,7 @@
 From daeb5466bdcdea76b797468e63b780b87d0005b2 Mon Sep 17 00:00:00 2001
 From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
 Date: Fri, 23 Oct 2026 00:20:03 +0200
-Subject: [PATCH 11/20] power: supply: bq24190: work without IRQ line; add
+Subject: [PATCH 11/51] power: supply: bq24190: work without IRQ line; add
  MT6351 fuel gauge (FGADC) driver
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -14,7 +14,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  create mode 100644 drivers/power/supply/mt6351-battery.c
 
 diff --git a/drivers/power/supply/Kconfig b/drivers/power/supply/Kconfig
-index f0ede1cec..d007ab1f0 100644
+index f0ede1cecb6a..d007ab1f0e71 100644
 --- a/drivers/power/supply/Kconfig
 +++ b/drivers/power/supply/Kconfig
 @@ -778,6 +778,13 @@ config CHARGER_BQ2415X
@@ -32,7 +32,7 @@ index f0ede1cec..d007ab1f0 100644
  	tristate "TI BQ24190 battery charger driver"
  	depends on I2C
 diff --git a/drivers/power/supply/Makefile b/drivers/power/supply/Makefile
-index 31fe4a145..1fb4123f1 100644
+index 31fe4a145929..1fb4123f12f1 100644
 --- a/drivers/power/supply/Makefile
 +++ b/drivers/power/supply/Makefile
 @@ -133,3 +133,4 @@ obj-$(CONFIG_CHARGER_QCOM_SMB2)	+= qcom_smbx.o
@@ -41,7 +41,7 @@ index 31fe4a145..1fb4123f1 100644
  obj-$(CONFIG_CHARGER_MAX77759)	+= max77759_charger.o
 +obj-$(CONFIG_BATTERY_MT6351)	+= mt6351-battery.o
 diff --git a/drivers/power/supply/bq24190_charger.c b/drivers/power/supply/bq24190_charger.c
-index 8e28f86ae..a8951c097 100644
+index 8e28f86ae09f..a8951c097e78 100644
 --- a/drivers/power/supply/bq24190_charger.c
 +++ b/drivers/power/supply/bq24190_charger.c
 @@ -220,7 +220,10 @@ enum bq24190_chip {
@@ -125,7 +125,7 @@ index 8e28f86ae..a8951c097 100644
  
 diff --git a/drivers/power/supply/mt6351-battery.c b/drivers/power/supply/mt6351-battery.c
 new file mode 100644
-index 000000000..e449d4acb
+index 000000000000..e449d4acb586
 --- /dev/null
 +++ b/drivers/power/supply/mt6351-battery.c
 @@ -0,0 +1,487 @@
@@ -616,3 +616,6 @@ index 000000000..e449d4acb
 +
 +MODULE_DESCRIPTION("MT6351 AUXADC battery voltage and BC1.2 charger detection (E-PAD)");
 +MODULE_LICENSE("GPL");
+-- 
+2.53.0
+

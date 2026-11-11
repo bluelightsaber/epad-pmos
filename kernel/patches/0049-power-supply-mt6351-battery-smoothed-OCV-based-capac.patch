@@ -1,0 +1,228 @@
+From 46b684a6bb22f1b1b11559bd75f86e7e0ec7941c Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 20:22:15 +0100
+Subject: [PATCH 49/51] power: supply: mt6351-battery: smoothed OCV-based
+ capacity and charge thresholds
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/power/supply/mt6351-battery.c | 147 +++++++++++++++++++++++++-
+ 1 file changed, 146 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/power/supply/mt6351-battery.c b/drivers/power/supply/mt6351-battery.c
+index f31de0198159..ee6793e6d924 100644
+--- a/drivers/power/supply/mt6351-battery.c
++++ b/drivers/power/supply/mt6351-battery.c
+@@ -82,8 +82,26 @@ struct mt6351_bat {
+ 	bool online;
+ 	int usb_type;
+ 	int current_max;
++	/* modo «siempre enchufada»: carga en pausa entre start y end (%), el sistema va del cable */
++	int start_thr, end_thr;
++	bool paused;
++	unsigned long since;	/* jiffies del último cambio de pausa */
++	unsigned int ticks;
++	bool eval_now;
++	/* capacidad suavizada (×16) a partir de la OCV estimada; se actualiza cada 5 s en el work */
++	int cap_x16;
++	bool cap_valid;
+ };
+ 
++/*
++ * Resistencia interna aproximada para estimar la OCV: cargando la tensión sube con la corriente y
++ * descargando baja (aosp-19: 3,962 V a −1,675 A y 4,211 V a −0,32 A con el mismo estado → ~180 mΩ).
++ */
++#define BAT_R_INT_MOHM		180
++/* Tiempos mínimos entre cambios: que la tensión se asiente y no oscile cada pocos segundos. */
++#define PAUSE_MIN_S		300
++#define CHARGE_MIN_S		600
++
+ /* battery_profile_t2 (25 °C): tensión en mV para una profundidad de descarga de 0..100 %. */
+ static const u16 ocv_mv[101] = {
+ 	4342, 4328, 4316, 4303, 4291, 4280, 4268, 4257, 4246, 4234, 4223, 4212, 4202, 4191, 4180, 4170,
+@@ -227,6 +245,35 @@ static int mt6351_bat_capacity(int mv)
+ 	return 0;
+ }
+ 
++/* OCV estimada: tensión menos la caída en la resistencia interna (corriente > 0 cargando, < 0 descargando). */
++static int mt6351_bat_ocv_mv(struct mt6351_bat *b, int *mv)
++{
++	int ua = 0, ret;
++
++	ret = mt6351_bat_voltage_mv(b, mv);
++	if (ret)
++		return ret;
++	if (!mt6351_bat_current_ua(b, &ua))
++		*mv -= ua / 1000 * BAT_R_INT_MOHM / 1000;
++	return 0;
++}
++
++/* Capacidad suavizada: media exponencial (1/8 cada 5 s, ~40 s) para que no salte con la carga de la CPU. */
++static void mt6351_bat_update_capacity(struct mt6351_bat *b)
++{
++	int mv, cap;
++
++	if (mt6351_bat_ocv_mv(b, &mv))
++		return;
++	cap = mt6351_bat_capacity(mv) * 16;
++	if (!b->cap_valid) {
++		b->cap_x16 = cap;
++		b->cap_valid = true;
++	} else {
++		b->cap_x16 += (cap - b->cap_x16) / 8;
++	}
++}
++
+ /* Temperatura en décimas de °C a partir de la tensión del divisor NTC. */
+ static int mt6351_bat_temp(struct mt6351_bat *b, int *temp)
+ {
+@@ -275,7 +322,11 @@ static int mt6351_bat_get_property(struct power_supply *psy, enum power_supply_p
+ 		val->intval = mv * 1000;
+ 		return ret;
+ 	case POWER_SUPPLY_PROP_CAPACITY:
+-		ret = mt6351_bat_voltage_mv(b, &mv);
++		if (b->cap_valid) {
++			val->intval = (b->cap_x16 + 8) / 16;
++			return 0;
++		}
++		ret = mt6351_bat_ocv_mv(b, &mv);
+ 		val->intval = mt6351_bat_capacity(mv);
+ 		return ret;
+ 	case POWER_SUPPLY_PROP_TEMP:
+@@ -290,11 +341,95 @@ static int mt6351_bat_get_property(struct power_supply *psy, enum power_supply_p
+ 	case POWER_SUPPLY_PROP_VOLTAGE_MIN_DESIGN:
+ 		val->intval = 3400000;
+ 		return 0;
++	case POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD:
++		val->intval = b->start_thr;
++		return 0;
++	case POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD:
++		val->intval = b->end_thr;
++		return 0;
+ 	default:
+ 		return -EINVAL;
+ 	}
+ }
+ 
++static int mt6351_bat_set_property(struct power_supply *psy, enum power_supply_property psp,
++				   const union power_supply_propval *val)
++{
++	struct mt6351_bat *b = power_supply_get_drvdata(psy);
++
++	if (val->intval < 0 || val->intval > 100)
++		return -EINVAL;
++	switch (psp) {
++	case POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD:
++		b->start_thr = val->intval;
++		break;
++	case POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD:
++		b->end_thr = val->intval;
++		break;
++	default:
++		return -EINVAL;
++	}
++	b->eval_now = true;	/* reevaluar ya, sin esperar los tiempos mínimos */
++	b->since = 0;
++	return 0;
++}
++
++static int mt6351_bat_writeable(struct power_supply *psy, enum power_supply_property psp)
++{
++	return psp == POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD ||
++	       psp == POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD;
++}
++
++/* Carga del bq24190 activada o en pausa (CHG_CONFIG): en pausa el sistema sigue alimentado del cable. */
++static void mt6351_bat_charger_enable(struct mt6351_bat *b, bool on)
++{
++	union power_supply_propval v = {
++		.intval = on ? POWER_SUPPLY_CHARGE_TYPE_FAST : POWER_SUPPLY_CHARGE_TYPE_NONE,
++	};
++	struct power_supply *chg = power_supply_get_by_name("bq24190-charger");
++
++	if (!chg)
++		return;
++	power_supply_set_property(chg, POWER_SUPPLY_PROP_CHARGE_TYPE, &v);
++	power_supply_put(chg);
++}
++
++/*
++ * Umbrales de carga (charge_control_*_threshold): con el cable puesto, pausa la carga al llegar a end y la reanuda
++ * al bajar a start. La capacidad es la suavizada (OCV estimada). Tiempos mínimos para no oscilar. Cada 30 s.
++ */
++static void mt6351_bat_threshold(struct mt6351_bat *b)
++{
++	int cap;
++	bool limit = b->online && b->end_thr > 0 && b->end_thr < 100;
++	unsigned long held = b->since ? (jiffies - b->since) / HZ : ULONG_MAX;
++
++	b->eval_now = false;
++
++	if (!limit) {
++		if (b->paused) {
++			b->paused = false;
++			b->since = jiffies;
++			mt6351_bat_charger_enable(b, true);
++		}
++		return;
++	}
++	if (!b->cap_valid)
++		return;
++	cap = (b->cap_x16 + 8) / 16;
++	if (!b->paused && cap >= b->end_thr && held >= CHARGE_MIN_S) {
++		b->paused = true;
++		b->since = jiffies;
++		dev_info(b->dev, "carga en pausa al %d %% (límite %d %%)\n", cap, b->end_thr);
++	} else if (b->paused && cap <= b->start_thr && held >= PAUSE_MIN_S) {
++		b->paused = false;
++		b->since = jiffies;
++		dev_info(b->dev, "carga reanudada al %d %% (umbral %d %%)\n", cap, b->start_thr);
++	}
++	/* se reafirma siempre: el bq24190 vuelve a cargar solo si se reinicia (vigilante, desenchufar) */
++	mt6351_bat_charger_enable(b, !b->paused);
++}
++
+ static const enum power_supply_property mt6351_bat_props[] = {
+ 	POWER_SUPPLY_PROP_PRESENT,
+ 	POWER_SUPPLY_PROP_TECHNOLOGY,
+@@ -304,6 +439,8 @@ static const enum power_supply_property mt6351_bat_props[] = {
+ 	POWER_SUPPLY_PROP_CHARGE_COUNTER,
+ 	POWER_SUPPLY_PROP_VOLTAGE_MAX_DESIGN,
+ 	POWER_SUPPLY_PROP_VOLTAGE_MIN_DESIGN,
++	POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD,
++	POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD,
+ };
+ 
+ static const struct power_supply_desc mt6351_bat_desc = {
+@@ -312,6 +449,8 @@ static const struct power_supply_desc mt6351_bat_desc = {
+ 	.properties = mt6351_bat_props,
+ 	.num_properties = ARRAY_SIZE(mt6351_bat_props),
+ 	.get_property = mt6351_bat_get_property,
++	.set_property = mt6351_bat_set_property,
++	.property_is_writeable = mt6351_bat_writeable,
+ };
+ 
+ /* Un paso de BC1.2: programar CHR_CON20/21, esperar y leer el comparador; vuelve a dejar CON21 en reposo. */
+@@ -410,6 +549,10 @@ static void mt6351_usb_work(struct work_struct *work)
+ 		}
+ 		power_supply_changed(b->usb);
+ 	}
++	if (++b->ticks % 5 == 0 || !b->cap_valid)
++		mt6351_bat_update_capacity(b);
++	if ((b->paused || b->end_thr < 100) && (b->ticks % 30 == 0 || b->eval_now))
++		mt6351_bat_threshold(b);
+ 	schedule_delayed_work(&b->work, HZ);
+ }
+ 
+@@ -490,6 +633,8 @@ static int mt6351_bat_probe(struct platform_device *pdev)
+ 		of_node_put(np);
+ 	}
+ 	b->usb_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
++	b->start_thr = 0;
++	b->end_thr = 100;
+ 	cfg.fwnode = NULL;
+ 	cfg.supplied_to = mt6351_usb_supplied_to;
+ 	cfg.num_supplicants = ARRAY_SIZE(mt6351_usb_supplied_to);
+-- 
+2.53.0
+

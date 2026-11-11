@@ -1,7 +1,7 @@
 From 9512ae3e9a12a232cd002ef55cbdfcf8a59da728 Mon Sep 17 00:00:00 2001
 From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
 Date: Fri, 23 Oct 2026 00:19:59 +0200
-Subject: [PATCH 01/20] watchdog: mtk_wdt: raise restart handler priority
+Subject: [PATCH 01/51] watchdog: mtk_wdt: raise restart handler priority
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
@@ -9,7 +9,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  1 file changed, 2 insertions(+), 1 deletion(-)
 
 diff --git a/drivers/watchdog/mtk_wdt.c b/drivers/watchdog/mtk_wdt.c
-index 91d110646..ab480e60a 100644
+index 91d110646e16..ab480e60a9e2 100644
 --- a/drivers/watchdog/mtk_wdt.c
 +++ b/drivers/watchdog/mtk_wdt.c
 @@ -436,7 +436,8 @@ static int mtk_wdt_probe(struct platform_device *pdev)
@@ -22,3 +22,6 @@ index 91d110646..ab480e60a 100644
  
  	watchdog_set_drvdata(&mtk_wdt->wdt_dev, mtk_wdt);
  
+-- 
+2.53.0
+

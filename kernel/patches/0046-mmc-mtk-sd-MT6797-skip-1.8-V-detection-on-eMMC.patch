@@ -1,0 +1,30 @@
+From ad4b1e0d6e739c3b066c91406b39eb765da00ed0 Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 22:32:01 +0100
+Subject: [PATCH 46/51] mmc: mtk-sd: MT6797: skip 1.8 V detection on eMMC
+
+The BV18 detection is only valid for SD cards switching with CMD11; on the
+eMMC it fails and the card never initialises (-EAGAIN).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/mmc/host/mtk-sd.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/mmc/host/mtk-sd.c b/drivers/mmc/host/mtk-sd.c
+index ecd2dfc371d5..98b0079bd874 100644
+--- a/drivers/mmc/host/mtk-sd.c
++++ b/drivers/mmc/host/mtk-sd.c
+@@ -1742,7 +1742,8 @@ static int msdc_ops_switch_volt(struct mmc_host *mmc, struct mmc_ios *ios)
+ 		 * MT6797 (BSP sd.c msdc_ops_switch_volt): tras pasar a 1,8 V el controlador comprueba él mismo el
+ 		 * cambio (MSDC_CFG_BV18SDT, con el reloj a ~260 kHz) y lo confirma en MSDC_CFG_BV18PSS.
+ 		 */
+-		if (host->dev_comp->bv18_detect &&
++		/* Solo tarjetas SD (CMD11): la eMMC no hace esta detección y con ella falla al iniciar (-EAGAIN). */
++		if (host->dev_comp->bv18_detect && !(mmc->caps2 & MMC_CAP2_NO_SD) &&
+ 		    ios->signal_voltage == MMC_SIGNAL_VOLTAGE_180) {
+ 			u32 val;
+ 
+-- 
+2.53.0
+

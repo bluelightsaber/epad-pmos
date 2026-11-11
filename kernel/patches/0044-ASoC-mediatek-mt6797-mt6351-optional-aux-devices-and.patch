@@ -1,0 +1,48 @@
+From 1eeb6ca47627e9c06f9a0c8c31eaf60167448af4 Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 00:17:27 +0100
+Subject: [PATCH 44/51] ASoC: mediatek: mt6797-mt6351: optional aux devices and
+ DAPM routing from DT
+
+Parse "audio-aux-devs" and "audio-routing" so a board can hang an
+amplifier (e.g. a GPIO-switched simple-audio-amplifier for the
+speaker) behind the codec outputs and have DAPM switch it with the
+stream instead of keeping it always on.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ sound/soc/mediatek/mt6797/mt6797-mt6351.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/sound/soc/mediatek/mt6797/mt6797-mt6351.c b/sound/soc/mediatek/mt6797/mt6797-mt6351.c
+index 484fa246a7db..b4cba6f5b9de 100644
+--- a/sound/soc/mediatek/mt6797/mt6797-mt6351.c
++++ b/sound/soc/mediatek/mt6797/mt6797-mt6351.c
+@@ -221,11 +221,24 @@ static int mt6797_mt6351_dev_probe(struct platform_device *pdev)
+ 		dai_link->codecs->of_node = codec_node;
+ 	}
+ 
++	/* optional board amplifiers (e.g. a GPIO-switched speaker amp) behind the codec outputs */
++	if (of_property_present(pdev->dev.of_node, "audio-aux-devs")) {
++		ret = snd_soc_of_parse_aux_devs(card, "audio-aux-devs");
++		if (ret)
++			goto put_codec_node;
++	}
++	if (of_property_present(pdev->dev.of_node, "audio-routing")) {
++		ret = snd_soc_of_parse_audio_routing(card, "audio-routing");
++		if (ret)
++			goto put_codec_node;
++	}
++
+ 	ret = devm_snd_soc_register_card(&pdev->dev, card);
+ 	if (ret)
+ 		dev_err(&pdev->dev, "%s snd_soc_register_card fail %d\n",
+ 			__func__, ret);
+ 
++put_codec_node:
+ 	of_node_put(codec_node);
+ put_platform_node:
+ 	of_node_put(platform_node);
+-- 
+2.53.0
+

@@ -1,7 +1,7 @@
 From 32ba3779b16f63719755e665dd8ea38729c4c5e3 Mon Sep 17 00:00:00 2001
 From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
 Date: Fri, 23 Oct 2026 00:20:02 +0200
-Subject: [PATCH 08/20] mmc: mtk-sd: add MT6797 (HS200/HS400)
+Subject: [PATCH 08/51] mmc: mtk-sd: add MT6797 (HS200/HS400)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
@@ -9,7 +9,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  1 file changed, 18 insertions(+)
 
 diff --git a/drivers/mmc/host/mtk-sd.c b/drivers/mmc/host/mtk-sd.c
-index d70e37eb1..cdaaaa2a1 100644
+index d70e37eb1cb5..cdaaaa2a1e91 100644
 --- a/drivers/mmc/host/mtk-sd.c
 +++ b/drivers/mmc/host/mtk-sd.c
 @@ -580,6 +580,23 @@ static const struct mtk_mmc_compatible mt6795_compat = {
@@ -44,3 +44,6 @@ index d70e37eb1..cdaaaa2a1 100644
  	{ .compatible = "mediatek,mt7620-mmc", .data = &mt7620_compat},
  	{ .compatible = "mediatek,mt7622-mmc", .data = &mt7622_compat},
  	{ .compatible = "mediatek,mt7986-mmc", .data = &mt7986_compat},
+-- 
+2.53.0
+

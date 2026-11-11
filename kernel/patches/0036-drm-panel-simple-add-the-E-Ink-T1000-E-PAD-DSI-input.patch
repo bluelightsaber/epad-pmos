@@ -1,0 +1,68 @@
+From 44b92b88b184d653404749442a52a8e6fc1988b4 Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Mon, 2 Nov 2026 01:16:53 +0100
+Subject: [PATCH 36/51] drm/panel: simple: add the E Ink T1000 (E-PAD) DSI
+ input
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/gpu/drm/panel/panel-simple.c | 36 ++++++++++++++++++++++++++++
+ 1 file changed, 36 insertions(+)
+
+diff --git a/drivers/gpu/drm/panel/panel-simple.c b/drivers/gpu/drm/panel/panel-simple.c
+index c09bf3db5e78..aca914e321ad 100644
+--- a/drivers/gpu/drm/panel/panel-simple.c
++++ b/drivers/gpu/drm/panel/panel-simple.c
+@@ -6293,6 +6293,39 @@ static const struct panel_desc_dsi auo_b080uan01 = {
+ 	.lanes = 4,
+ };
+ 
++/*
++ * E Ink T1000 timing controller on the Eewrite E-PAD (10.3" Carta, 1872x1404). It takes RGB888 video over
++ * four DSI lanes with no init commands and only reads the stream while it is painting (the controller is
++ * driven over I2C by the eink-t1000 driver). Timings as set up by the vendor boot loader (958 Mbps/lane).
++ */
++static const struct drm_display_mode eink_t1000_mode = {
++	.clock = 159350,
++	.hdisplay = 1872,
++	.hsync_start = 1872 + 15,
++	.hsync_end = 1872 + 15 + 6,
++	.htotal = 1872 + 15 + 6 + 15,
++	.vdisplay = 1404,
++	.vsync_start = 1404 + 15,
++	.vsync_end = 1404 + 15 + 6,
++	.vtotal = 1404 + 15 + 6 + 15,
++};
++
++static const struct panel_desc_dsi eink_t1000 = {
++	.desc = {
++		.modes = &eink_t1000_mode,
++		.num_modes = 1,
++		.bpc = 8,
++		.size = {
++			.width = 210,
++			.height = 157,
++		},
++		.connector_type = DRM_MODE_CONNECTOR_DSI,
++	},
++	.flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_SYNC_PULSE,
++	.format = MIPI_DSI_FMT_RGB888,
++	.lanes = 4,
++};
++
+ static const struct drm_display_mode boe_tv080wum_nl0_mode = {
+ 	.clock = 160000,
+ 	.hdisplay = 1200,
+@@ -6476,6 +6509,9 @@ static const struct of_device_id dsi_of_match[] = {
+ 	{
+ 		.compatible = "auo,b080uan01",
+ 		.data = &auo_b080uan01
++	}, {
++		.compatible = "eink,t1000-dsi",
++		.data = &eink_t1000
+ 	}, {
+ 		.compatible = "boe,tv080wum-nl0",
+ 		.data = &boe_tv080wum_nl0
+-- 
+2.53.0
+

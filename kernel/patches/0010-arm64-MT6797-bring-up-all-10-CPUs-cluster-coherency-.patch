@@ -1,7 +1,7 @@
 From b6febf5c06796a3c77374c5e1332e627167e3b19 Mon Sep 17 00:00:00 2001
 From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
 Date: Fri, 23 Oct 2026 00:20:02 +0200
-Subject: [PATCH 10/20] arm64: MT6797: bring up all 10 CPUs (cluster coherency,
+Subject: [PATCH 10/51] arm64: MT6797: bring up all 10 CPUs (cluster coherency,
  big cluster buck/VSRAM)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -11,7 +11,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  2 files changed, 322 insertions(+), 1 deletion(-)
 
 diff --git a/arch/arm64/kernel/psci.c b/arch/arm64/kernel/psci.c
-index fabd732d0..7490b626f 100644
+index fabd732d0a2d..7490b626fbc8 100644
 --- a/arch/arm64/kernel/psci.c
 +++ b/arch/arm64/kernel/psci.c
 @@ -9,9 +9,11 @@
@@ -356,7 +356,7 @@ index fabd732d0..7490b626f 100644
  };
 -
 diff --git a/arch/arm64/kernel/smp.c b/arch/arm64/kernel/smp.c
-index 3ab90aa24..a1a9ff9e5 100644
+index 3ab90aa24efb..a1a9ff9e5e52 100644
 --- a/arch/arm64/kernel/smp.c
 +++ b/arch/arm64/kernel/smp.c
 @@ -119,6 +119,11 @@ int __cpu_up(unsigned int cpu, struct task_struct *idle)
@@ -371,3 +371,6 @@ index 3ab90aa24..a1a9ff9e5 100644
  
  	/* Now bring the CPU into our world */
  	ret = boot_secondary(cpu, idle);
+-- 
+2.53.0
+

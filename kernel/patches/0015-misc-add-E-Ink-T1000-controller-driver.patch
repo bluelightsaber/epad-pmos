@@ -1,7 +1,7 @@
 From 9183e20d9fdbc7657d04010eee7942cd3b85ca5b Mon Sep 17 00:00:00 2001
 From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
 Date: Fri, 23 Oct 2026 00:20:04 +0200
-Subject: [PATCH 15/20] misc: add E Ink T1000 controller driver
+Subject: [PATCH 15/51] misc: add E Ink T1000 controller driver
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
@@ -12,7 +12,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  create mode 100644 drivers/misc/eink-t1000.c
 
 diff --git a/drivers/misc/Kconfig b/drivers/misc/Kconfig
-index 390256ed9..028c9b2e3 100644
+index 390256ed91f4..028c9b2e35f9 100644
 --- a/drivers/misc/Kconfig
 +++ b/drivers/misc/Kconfig
 @@ -341,6 +341,13 @@ config APDS9802ALS
@@ -30,7 +30,7 @@ index 390256ed9..028c9b2e3 100644
  	tristate "Intersil ISL29003 ambient light sensor"
  	depends on I2C && SYSFS
 diff --git a/drivers/misc/Makefile b/drivers/misc/Makefile
-index fed47c767..e3ddc7ed4 100644
+index fed47c7672b9..e3ddc7ed46bf 100644
 --- a/drivers/misc/Makefile
 +++ b/drivers/misc/Makefile
 @@ -74,3 +74,4 @@ obj-$(CONFIG_MCHP_LAN966X_PCI)	+= lan966x-pci.o
@@ -40,7 +40,7 @@ index fed47c767..e3ddc7ed4 100644
 +obj-$(CONFIG_EINK_T1000)	+= eink-t1000.o
 diff --git a/drivers/misc/eink-t1000.c b/drivers/misc/eink-t1000.c
 new file mode 100644
-index 000000000..980bdfeb1
+index 000000000000..980bdfeb185d
 --- /dev/null
 +++ b/drivers/misc/eink-t1000.c
 @@ -0,0 +1,482 @@
@@ -526,3 +526,6 @@ index 000000000..980bdfeb1
 +
 +MODULE_DESCRIPTION("Control del controlador E-Ink T1000 (E-PAD)");
 +MODULE_LICENSE("GPL");
+-- 
+2.53.0
+

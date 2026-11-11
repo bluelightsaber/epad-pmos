@@ -1,0 +1,50 @@
+From 69f7abab028f5de3aee16421af1ef15e4e952527 Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Tue, 3 Nov 2026 22:18:10 +0100
+Subject: [PATCH 42/51] ASoC: mediatek: mt6797-mt6351: do not write through
+ empty codec arrays
+
+COMP_DUMMY() leaves the FE links with a zero-size codecs array, which
+aliases the following platforms array. Assigning the codec of_node
+through it overwrote the platform, so the FE runtime got the MT6351
+codec instead of the AFE as platform component and
+snd_soc_rtdcom_lookup(rtd, AFE_PCM_NAME) returned NULL in hw_params
+(NULL dereference in mt6797_memif_fs on the first playback).
+
+Skip links without codecs/platforms when filling the of_nodes.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ sound/soc/mediatek/mt6797/mt6797-mt6351.c | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/sound/soc/mediatek/mt6797/mt6797-mt6351.c b/sound/soc/mediatek/mt6797/mt6797-mt6351.c
+index daad9544a8d4..484fa246a7db 100644
+--- a/sound/soc/mediatek/mt6797/mt6797-mt6351.c
++++ b/sound/soc/mediatek/mt6797/mt6797-mt6351.c
+@@ -197,7 +197,7 @@ static int mt6797_mt6351_dev_probe(struct platform_device *pdev)
+ 		return -EINVAL;
+ 	}
+ 	for_each_card_prelinks(card, i, dai_link) {
+-		if (dai_link->platforms->name)
++		if (!dai_link->num_platforms || dai_link->platforms->name)
+ 			continue;
+ 		dai_link->platforms->of_node = platform_node;
+ 	}
+@@ -211,7 +211,12 @@ static int mt6797_mt6351_dev_probe(struct platform_device *pdev)
+ 		goto put_platform_node;
+ 	}
+ 	for_each_card_prelinks(card, i, dai_link) {
+-		if (dai_link->codecs->name)
++		/*
++		 * COMP_DUMMY() leaves a zero-size codecs array that aliases
++		 * the platforms array: writing through it would turn the
++		 * codec into the FE platform component.
++		 */
++		if (!dai_link->num_codecs || dai_link->codecs->name)
+ 			continue;
+ 		dai_link->codecs->of_node = codec_node;
+ 	}
+-- 
+2.53.0
+

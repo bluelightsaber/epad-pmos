@@ -1,7 +1,7 @@
 From aba48717cf1a205c98fe77a832b0a98f108ec60d Mon Sep 17 00:00:00 2001
 From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
 Date: Fri, 23 Oct 2026 00:20:04 +0200
-Subject: [PATCH 17/20] Bluetooth: add MT6797 CONNSYS (STP) driver
+Subject: [PATCH 17/51] Bluetooth: add MT6797 CONNSYS (STP) driver
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
@@ -18,7 +18,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  create mode 100644 drivers/bluetooth/btmt6797.rst
 
 diff --git a/drivers/bluetooth/Kconfig b/drivers/bluetooth/Kconfig
-index 4e8c24d75..36329ed15 100644
+index 4e8c24d757e9..36329ed15deb 100644
 --- a/drivers/bluetooth/Kconfig
 +++ b/drivers/bluetooth/Kconfig
 @@ -3,6 +3,14 @@
@@ -37,7 +37,7 @@ index 4e8c24d75..36329ed15 100644
  	tristate
  	select REGMAP
 diff --git a/drivers/bluetooth/Makefile b/drivers/bluetooth/Makefile
-index bafc26250..e36511165 100644
+index bafc26250b63..e36511165c53 100644
 --- a/drivers/bluetooth/Makefile
 +++ b/drivers/bluetooth/Makefile
 @@ -25,6 +25,7 @@ obj-$(CONFIG_BT_BCM)		+= btbcm.o
@@ -50,7 +50,7 @@ index bafc26250..e36511165 100644
  obj-$(CONFIG_BT_NXPUART)	+= btnxpuart.o
 diff --git a/drivers/bluetooth/btmt6797-compat.h b/drivers/bluetooth/btmt6797-compat.h
 new file mode 100644
-index 000000000..0864417ae
+index 000000000000..0864417ae7ff
 --- /dev/null
 +++ b/drivers/bluetooth/btmt6797-compat.h
 @@ -0,0 +1,40 @@
@@ -96,7 +96,7 @@ index 000000000..0864417ae
 +#endif
 diff --git a/drivers/bluetooth/btmt6797-h4.h b/drivers/bluetooth/btmt6797-h4.h
 new file mode 100644
-index 000000000..f0a1cd68c
+index 000000000000..f0a1cd68cee5
 --- /dev/null
 +++ b/drivers/bluetooth/btmt6797-h4.h
 @@ -0,0 +1,85 @@
@@ -187,7 +187,7 @@ index 000000000..f0a1cd68c
 +#endif
 diff --git a/drivers/bluetooth/btmt6797.c b/drivers/bluetooth/btmt6797.c
 new file mode 100644
-index 000000000..53c8f2cc6
+index 000000000000..53c8f2cc6e83
 --- /dev/null
 +++ b/drivers/bluetooth/btmt6797.c
 @@ -0,0 +1,405 @@
@@ -598,7 +598,7 @@ index 000000000..53c8f2cc6
 +MODULE_FIRMWARE(MT6797_BT_NVRAM);
 diff --git a/drivers/bluetooth/btmt6797.rst b/drivers/bluetooth/btmt6797.rst
 new file mode 100644
-index 000000000..4cfc7ac8b
+index 000000000000..4cfc7ac8bad5
 --- /dev/null
 +++ b/drivers/bluetooth/btmt6797.rst
 @@ -0,0 +1,46 @@
@@ -648,3 +648,6 @@ index 000000000..4cfc7ac8b
 +ACL/GATT traffic, coexistence recovery or PM acceptance is claimed yet.
 +Full BSP 4.2 optional capabilities remain an explicit gap, not a completed
 +feature after the compatibility correction.
+-- 
+2.53.0
+

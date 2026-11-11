@@ -1,0 +1,138 @@
+From 6baed68e56df368d02550a23e88b9cd1e327e667 Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Sat, 31 Oct 2026 21:49:41 +0100
+Subject: [PATCH 22/51] regulator: mt6351: VMCH/VMC voltage tables, change
+ voltage with the LDO off, VMC calibration
+
+The microSD supplies are switched like the vendor BSP does (power down, set
+VOSEL, power up). The boot chain leaves RG_VMC_CAL at +100 mV (0x1b); the BSP
+subtracts that at probe, so do the same to get a nominal 1.8 V for UHS.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/regulator/mt6351-regulator.c | 87 +++++++++++++++++++++++++++-
+ 1 file changed, 85 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/regulator/mt6351-regulator.c b/drivers/regulator/mt6351-regulator.c
+index 4a7524097e9b..153b9214cef2 100644
+--- a/drivers/regulator/mt6351-regulator.c
++++ b/drivers/regulator/mt6351-regulator.c
+@@ -4,9 +4,10 @@
+  * E-PAD: solo encender/apagar con la tensión que deja el firmware. Bits de habilitación tomados del kernel 3.18
+  * de MediaTek (drivers/misc/mediatek/power/mt6797/pmic.c y upmu_hw.h): RG_<LDO>_EN, bit 1 del registro CON.
+  *
+- * Solo se declaran los LDO que Android deja encendidos en esta tablet; en el DT se marcan regulator-always-on
+- * para que el kernel nunca apague uno que el sistema necesite.
++ * Se declaran los LDO que Android deja encendidos en esta tablet (en el DT, regulator-always-on para que el kernel
++ * nunca apague uno que el sistema necesite) y los de la microSD, que maneja el driver MMC (con tensión elegible).
+  */
++#include <linux/delay.h>
+ #include <linux/module.h>
+ #include <linux/of.h>
+ #include <linux/platform_device.h>
+@@ -29,6 +30,83 @@
+ 		.enable_mask = BIT(1),					\
+ 	}
+ 
++/* LDO con tensión seleccionable por tabla (RG_<LDO>_VOSEL en <LDO>_ANA_CON0), p. ej. la microSD */
++#define MT6351_LDO_TABLE(_name, _reg, _vreg, _vmask, _table)		\
++	{								\
++		.name = #_name,						\
++		.of_match = of_match_ptr("ldo_" #_name),		\
++		.regulators_node = of_match_ptr("regulators"),		\
++		.ops = &mt6351_ldo_table_ops,				\
++		.type = REGULATOR_VOLTAGE,				\
++		.owner = THIS_MODULE,					\
++		.n_voltages = ARRAY_SIZE(_table),			\
++		.volt_table = (_table),					\
++		.vsel_reg = (_vreg),					\
++		.vsel_mask = (_vmask),					\
++		.enable_reg = (_reg),					\
++		.enable_mask = BIT(1),					\
++	}
++
++/*
++ * Como el BSP (msdc_io.c, msdc_ldo_power): la tensión de un LDO de la microSD se cambia con el LDO apagado
++ * (apagar, cambiar VOSEL, encender), no en marcha.
++ */
++static int mt6351_ldo_set_voltage_sel(struct regulator_dev *rdev, unsigned int sel)
++{
++	int on = regulator_is_enabled_regmap(rdev);
++	int ret;
++
++	if (on > 0) {
++		ret = regulator_disable_regmap(rdev);
++		if (ret)
++			return ret;
++		udelay(100);
++	}
++	ret = regulator_set_voltage_sel_regmap(rdev, sel);
++	if (on > 0) {
++		int ret2 = regulator_enable_regmap(rdev);
++
++		if (!ret)
++			ret = ret2;
++	}
++	return ret;
++}
++
++static const struct regulator_ops mt6351_ldo_table_ops = {
++	.enable = regulator_enable_regmap,
++	.disable = regulator_disable_regmap,
++	.is_enabled = regulator_is_enabled_regmap,
++	.list_voltage = regulator_list_voltage_table,
++	.map_voltage = regulator_map_voltage_iterate,
++	.get_voltage_sel = regulator_get_voltage_sel_regmap,
++	.set_voltage_sel = mt6351_ldo_set_voltage_sel,
++};
++
++/*
++ * Calibración de VMC (RG_VMC_CAL, VMC_ANA_CON0 bits 4:0, pasos de 20 mV: 1..15 = -20..-300 mV, 31..17 = +20..
++ * +300 mV). El arranque la deja en 0x1b (+100 mV); el BSP (sd.c, msdc_drv_probe) le resta 0x1b para dejarla en
++ * la nominal. Sin esto VMC da ~1,9 V en vez de 1,8 V.
++ */
++#define MT6351_VMC_ANA_CON0	0x0ae2
++#define MT6351_VMC_CAL_MASK	GENMASK(4, 0)
++
++static void mt6351_vmc_cal_fix(struct regmap *regmap)
++{
++	unsigned int val, cal;
++
++	if (regmap_read(regmap, MT6351_VMC_ANA_CON0, &val))
++		return;
++	cal = val & MT6351_VMC_CAL_MASK;
++	cal = (cal + 0x20 - 0x1b) & MT6351_VMC_CAL_MASK;
++	regmap_update_bits(regmap, MT6351_VMC_ANA_CON0, MT6351_VMC_CAL_MASK, cal);
++}
++
++/* Tablas de drivers/misc/mediatek/power/mt6797/pmic.c (kernel 3.18 de MediaTek) */
++static const unsigned int mt6351_vmch_volts[] = { 3000000, 3300000 };
++static const unsigned int mt6351_vmc_volts[] = {
++	1200000, 1300000, 1500000, 1800000, 2000000, 2900000, 3000000, 3300000,
++};
++
+ static const struct regulator_ops mt6351_ldo_ops = {
+ 	.enable = regulator_enable_regmap,
+ 	.disable = regulator_disable_regmap,
+@@ -52,6 +130,9 @@ static const struct regulator_desc mt6351_ldos[] = {
+ 	MT6351_LDO(vcn33_bt, 0x0a98, 3300000),
+ 	MT6351_LDO(vcn33_wifi, 0x0a9a, 3300000),
+ 	MT6351_LDO(vldo28, 0x0aa2, 2800000),
++	/* microSD (MSDC1): VMCH alimenta la tarjeta, VMC sus E/S (3,3 V o 1,8 V en UHS) */
++	MT6351_LDO_TABLE(vmch, 0x0a2e, 0x0ace, GENMASK(8, 8), mt6351_vmch_volts),
++	MT6351_LDO_TABLE(vmc, 0x0aaa, 0x0ae2, GENMASK(10, 8), mt6351_vmc_volts),
+ };
+ 
+ static int mt6351_regulator_probe(struct platform_device *pdev)
+@@ -63,6 +144,8 @@ static int mt6351_regulator_probe(struct platform_device *pdev)
+ 	if (!regmap)
+ 		return dev_err_probe(&pdev->dev, -ENODEV, "sin regmap del PMIC wrapper\n");
+ 
++	mt6351_vmc_cal_fix(regmap);
++
+ 	config.dev = &pdev->dev;
+ 	config.regmap = regmap;
+ 	for (i = 0; i < ARRAY_SIZE(mt6351_ldos); i++) {
+-- 
+2.53.0
+

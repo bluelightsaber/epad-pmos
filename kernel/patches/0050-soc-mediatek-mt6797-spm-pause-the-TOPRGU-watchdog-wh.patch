@@ -1,0 +1,84 @@
+From f59514ff216e2ffa9c34ae1ad3b62e690197cccb Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 20:22:15 +0100
+Subject: [PATCH 50/51] soc: mediatek: mt6797-spm: pause the TOPRGU watchdog
+ while suspended
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/soc/mediatek/mt6797-spm.c | 36 ++++++++++++++++++++++++++++++-
+ 1 file changed, 35 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/soc/mediatek/mt6797-spm.c b/drivers/soc/mediatek/mt6797-spm.c
+index 5e00e18c28dc..5bc8afa1cd6f 100644
+--- a/drivers/soc/mediatek/mt6797-spm.c
++++ b/drivers/soc/mediatek/mt6797-spm.c
+@@ -200,7 +200,7 @@ static struct mt6797_spm *spm;
+ static unsigned int irq_count;
+ static u32 irq_isr;
+ 
+-static unsigned int wake_sec = 10;
++static unsigned int wake_sec = 0;
+ module_param(wake_sec, uint, 0644);
+ static unsigned int psci_power_state = 0x1010000;
+ module_param(psci_power_state, uint, 0644);
+@@ -1210,6 +1210,36 @@ static bool rgu_net_on(void)
+ 	return rgu_net && safety && wake_sec && wake_sec < 20;
+ }
+ 
++/* parar el WDT del TOPRGU al dormir: mtk_wdt no lo para si nadie abrió /dev/watchdog y a los 31 s reinicia.
++ * Sin él, un cuelgue durmiendo con wake_sec=0 solo sale con pulsación larga. */
++static bool wdt_stop = true;
++module_param(wdt_stop, bool, 0644);
++static u32 wdt_saved_mode;
++
++static void mt6797_spm_wdt_log(const char *when)
++{
++	pr_info("SPM: WDT %s: mode 0x%x length 0x%x status 0x%x interval 0x%x\n", when, readl(spm->toprgu),
++		readl(spm->toprgu + 0x04), readl(spm->toprgu + 0x0c), readl(spm->toprgu + 0x10));
++}
++
++static void mt6797_spm_wdt_pause(void)
++{
++	wdt_saved_mode = 0;
++	if (!wdt_stop || rgu_net_on())
++		return;
++	wdt_saved_mode = readl(spm->toprgu);
++	writel(0x22000000 | (wdt_saved_mode & ~BIT(0)), spm->toprgu);
++}
++
++static void mt6797_spm_wdt_continue(void)
++{
++	if (!(wdt_saved_mode & BIT(0)))
++		return;
++	writel(0x1971, spm->toprgu + 0x08);
++	writel(0x22000000 | wdt_saved_mode, spm->toprgu);
++	wdt_saved_mode = 0;
++}
++
+ /* etapa de la suspensión en SPM_PASR_DPD_0 (sin uso en el firmware; sobrevive a un reinicio por WDT) */
+ #define SPM_STAGE			0x630
+ #define STAGE(n)			spm_wr(SPM_STAGE, 0x5e5e0000 | (n))
+@@ -1712,8 +1742,10 @@ static void mt6797_spm_pmic_suspend(struct regmap *m, bool enter)
+ static int mt6797_spm_prepare(void)
+ {
+ 	STAGE(1);
++	mt6797_spm_wdt_log("al dormir");
+ 	if (rgu_net_on())
+ 		mt6797_spm_rgu_arm();
++	mt6797_spm_wdt_pause();
+ 	mt6797_spm_pmic_suspend(spm->pmic, true);
+ 	mt6797_spm_pwrap_suspend_table(spm);
+ 	mt6797_spm_pmic_ck(spm->pmic, true);
+@@ -1724,6 +1756,8 @@ static int mt6797_spm_prepare(void)
+ 
+ static void mt6797_spm_finish(void)
+ {
++	mt6797_spm_wdt_log("al volver");
++	mt6797_spm_wdt_continue();
+ 	if (vcorefs)
+ 		mt6797_spm_vcorefs_start(spm);
+ 	mt6797_spm_pmic_ck(spm->pmic, false);
+-- 
+2.53.0
+

@@ -1,7 +1,7 @@
 From 75f73d8b1f3acced24b5ab8ba17e7aae2054e7b5 Mon Sep 17 00:00:00 2001
 From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
 Date: Fri, 23 Oct 2026 00:20:01 +0200
-Subject: [PATCH 06/20] Input: cyttsp5: support the E-PAD TT21000 (sysinfo,
+Subject: [PATCH 06/51] Input: cyttsp5: support the E-PAD TT21000 (sysinfo,
  axis properties order)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -10,7 +10,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  1 file changed, 19 insertions(+), 2 deletions(-)
 
 diff --git a/drivers/input/touchscreen/cyttsp5.c b/drivers/input/touchscreen/cyttsp5.c
-index e878a02dc..41be75739 100644
+index e878a02dc9b7..41be75739a00 100644
 --- a/drivers/input/touchscreen/cyttsp5.c
 +++ b/drivers/input/touchscreen/cyttsp5.c
 @@ -392,6 +392,9 @@ static int cyttsp5_setup_input_device(struct device *dev)
@@ -55,3 +55,6 @@ index e878a02dc..41be75739 100644
  	__set_bit(EV_KEY, ts->input->evbit);
  	for (i = 0; i < si->num_btns; i++)
  		__set_bit(si->key_code[i], ts->input->keybit);
+-- 
+2.53.0
+

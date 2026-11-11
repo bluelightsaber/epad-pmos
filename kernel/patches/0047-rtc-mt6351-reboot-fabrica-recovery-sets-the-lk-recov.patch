@@ -1,0 +1,61 @@
+From 5ee37d45c8eebbd1235b772c9caf90d125c8d73f Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 00:45:00 +0100
+Subject: [PATCH 47/51] rtc: mt6351: reboot fabrica/recovery sets the lk
+ recovery flag
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/rtc/rtc-mt6351.c | 22 ++++++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+diff --git a/drivers/rtc/rtc-mt6351.c b/drivers/rtc/rtc-mt6351.c
+index 156faaecc6bf..ae82c7c9e1a1 100644
+--- a/drivers/rtc/rtc-mt6351.c
++++ b/drivers/rtc/rtc-mt6351.c
+@@ -25,6 +25,7 @@ struct mt6351_rtc {
+ 	struct rtc_device *rtc_dev;
+ 	struct mutex lock;
+ 	int irq;
++	struct notifier_block reboot_nb;
+ };
+ 
+ static int mt6351_rtc_write_trigger(struct mt6351_rtc *rtc)
+@@ -225,6 +226,25 @@ static ssize_t boot_bits_store(struct device *dev, struct device_attribute *attr
+ }
+ static DEVICE_ATTR_RW(boot_bits);
+ 
++/*
++ * `reboot recovery` / `reboot fabrica`: marca de recovery para lk (RTC_PDN1 0x10, de un solo uso: lk la borra).
++ * La ranura recovery tiene el Android de fábrica; boot, AOSP.
++ */
++static int mt6351_rtc_reboot(struct notifier_block *nb, unsigned long action, void *data)
++{
++	struct mt6351_rtc *rtc = container_of(nb, struct mt6351_rtc, reboot_nb);
++	const char *cmd = data;
++
++	if (action != SYS_RESTART || !cmd || (strcmp(cmd, "recovery") && strcmp(cmd, "fabrica")))
++		return NOTIFY_DONE;
++	mutex_lock(&rtc->lock);
++	if (!regmap_update_bits(rtc->regmap, MT6351_RTC_BASE + MT6351_RTC_PDN1, 0x70, 0x10))
++		mt6351_rtc_write_trigger(rtc);
++	mutex_unlock(&rtc->lock);
++	pr_info("mt6351-rtc: siguiente arranque en recovery (%s)\n", cmd);
++	return NOTIFY_DONE;
++}
++
+ /*
+  * Apagado (como mt6323-poweroff): BBPU solo con la clave deja PWREN a 0 y el PMIC corta la alimentación.
+  * Sin el mutex: se llama con las interrupciones desactivadas.
+@@ -260,6 +280,8 @@ static int mt6351_rtc_probe(struct platform_device *pdev)
+ 	mutex_init(&rtc->lock);
+ 	platform_set_drvdata(pdev, rtc);
+ 	device_create_file(&pdev->dev, &dev_attr_boot_bits);
++	rtc->reboot_nb.notifier_call = mt6351_rtc_reboot;
++	devm_register_reboot_notifier(&pdev->dev, &rtc->reboot_nb);
+ 
+ 	rdev = devm_rtc_allocate_device(&pdev->dev);
+ 	if (IS_ERR(rdev))
+-- 
+2.53.0
+

@@ -1,0 +1,56 @@
+From 06e4f77eb64b1685c6183821ae3e646540b50337 Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Sun, 1 Nov 2026 22:07:22 +0100
+Subject: [PATCH 31/51] drm/simpledrm: keep the E-Ink image on disable, show
+ the T1000 sleep image
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/gpu/drm/sysfb/simpledrm.c | 17 ++++++++++++++++-
+ 1 file changed, 16 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/drm/sysfb/simpledrm.c b/drivers/gpu/drm/sysfb/simpledrm.c
+index cdddcb495d5e..0f9ea8ffbbd2 100644
+--- a/drivers/gpu/drm/sysfb/simpledrm.c
++++ b/drivers/gpu/drm/sysfb/simpledrm.c
+@@ -603,12 +603,20 @@ static void simpledrm_primary_plane_helper_atomic_update(struct drm_plane *plane
+ 		t1000_request_refresh(damage.y1, damage.y2);
+ }
+ 
++/* E-PAD: la tinta conserva la imagen; no borrar la copia a negro al desactivar el plano. */
++static void simpledrm_primary_plane_helper_atomic_disable(struct drm_plane *plane,
++							  struct drm_atomic_commit *state)
++{
++	if (!IS_REACHABLE(CONFIG_EINK_T1000))
++		drm_sysfb_plane_helper_atomic_disable(plane, state);
++}
++
+ static const struct drm_plane_helper_funcs simpledrm_primary_plane_helper_funcs = {
+ 	.begin_fb_access = drm_sysfb_plane_helper_begin_fb_access,
+ 	.end_fb_access = drm_gem_end_shadow_fb_access,
+ 	.atomic_check = drm_sysfb_plane_helper_atomic_check,
+ 	.atomic_update = simpledrm_primary_plane_helper_atomic_update,
+-	.atomic_disable = drm_sysfb_plane_helper_atomic_disable,
++	.atomic_disable = simpledrm_primary_plane_helper_atomic_disable,
+ 	.get_scanout_buffer = drm_sysfb_plane_helper_get_scanout_buffer,
+ };
+ 
+@@ -617,8 +625,15 @@ static const struct drm_plane_funcs simpledrm_primary_plane_funcs = {
+ 	.destroy = drm_plane_cleanup,
+ };
+ 
++/* E-PAD: pantalla apagada (p. ej. Android en reposo) → el T1000 pinta la pantalla de reposo, si hay. */
++static void simpledrm_crtc_helper_atomic_disable(struct drm_crtc *crtc, struct drm_atomic_commit *state)
++{
++	t1000_show_sleep_image();
++}
++
+ static const struct drm_crtc_helper_funcs simpledrm_crtc_helper_funcs = {
+ 	DRM_SYSFB_CRTC_HELPER_FUNCS,
++	.atomic_disable = simpledrm_crtc_helper_atomic_disable,
+ };
+ 
+ static const struct drm_crtc_funcs simpledrm_crtc_funcs = {
+-- 
+2.53.0
+

@@ -1,7 +1,7 @@
 From 531cb2276eeacd592b1fa4c017079b4de6a161e5 Mon Sep 17 00:00:00 2001
 From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
 Date: Fri, 23 Oct 2026 00:20:05 +0200
-Subject: [PATCH 18/20] wifi: mediatek: add MT6797 CONNSYS WLAN driver
+Subject: [PATCH 18/51] wifi: mediatek: add MT6797 CONNSYS WLAN driver
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
@@ -414,7 +414,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  create mode 100644 drivers/net/wireless/mediatek/mt6797/os/version.h
 
 diff --git a/drivers/net/wireless/mediatek/Kconfig b/drivers/net/wireless/mediatek/Kconfig
-index bd4db1282..3f7c4b732 100644
+index bd4db128248e..3f7c4b73234d 100644
 --- a/drivers/net/wireless/mediatek/Kconfig
 +++ b/drivers/net/wireless/mediatek/Kconfig
 @@ -11,6 +11,17 @@ config WLAN_VENDOR_MEDIATEK
@@ -436,7 +436,7 @@ index bd4db1282..3f7c4b732 100644
  source "drivers/net/wireless/mediatek/mt76/Kconfig"
  endif # WLAN_VENDOR_MEDIATEK
 diff --git a/drivers/net/wireless/mediatek/Makefile b/drivers/net/wireless/mediatek/Makefile
-index 806172659..81a4c735c 100644
+index 806172659bf2..81a4c735c823 100644
 --- a/drivers/net/wireless/mediatek/Makefile
 +++ b/drivers/net/wireless/mediatek/Makefile
 @@ -1,3 +1,4 @@
@@ -446,7 +446,7 @@ index 806172659..81a4c735c 100644
  obj-$(CONFIG_MT76_CORE)	+= mt76/
 diff --git a/drivers/net/wireless/mediatek/mt6797/Makefile b/drivers/net/wireless/mediatek/mt6797/Makefile
 new file mode 100644
-index 000000000..f22dc7473
+index 000000000000..f22dc7473737
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/Makefile
 @@ -0,0 +1,202 @@
@@ -654,7 +654,7 @@ index 000000000..f22dc7473
 +
 diff --git a/drivers/net/wireless/mediatek/mt6797/PORTING.md b/drivers/net/wireless/mediatek/mt6797/PORTING.md
 new file mode 100644
-index 000000000..c54c9b810
+index 000000000000..c54c9b810c9c
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/PORTING.md
 @@ -0,0 +1,66 @@
@@ -726,7 +726,7 @@ index 000000000..c54c9b810
 +raw diagnostic mappings remain unavailable without an owned mapping.
 diff --git a/drivers/net/wireless/mediatek/mt6797/common/debug.c b/drivers/net/wireless/mediatek/mt6797/common/debug.c
 new file mode 100644
-index 000000000..948a10805
+index 000000000000..948a10805790
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/common/debug.c
 @@ -0,0 +1,166 @@
@@ -898,7 +898,7 @@ index 000000000..948a10805
 +#endif
 diff --git a/drivers/net/wireless/mediatek/mt6797/common/dump.c b/drivers/net/wireless/mediatek/mt6797/common/dump.c
 new file mode 100644
-index 000000000..643d2f70b
+index 000000000000..643d2f70b51e
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/common/dump.c
 @@ -0,0 +1,381 @@
@@ -1285,7 +1285,7 @@ index 000000000..643d2f70b
 +}				/* end of dumpMemory32() */
 diff --git a/drivers/net/wireless/mediatek/mt6797/common/makefile b/drivers/net/wireless/mediatek/mt6797/common/makefile
 new file mode 100644
-index 000000000..89b63909c
+index 000000000000..89b63909cac9
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/common/makefile
 @@ -0,0 +1,8 @@
@@ -1299,7 +1299,7 @@ index 000000000..89b63909c
 +!INCLUDE $(_WINDOW_MAKE_ROOT)\makefile.def
 diff --git a/drivers/net/wireless/mediatek/mt6797/common/sources.ce b/drivers/net/wireless/mediatek/mt6797/common/sources.ce
 new file mode 100644
-index 000000000..59b0b291e
+index 000000000000..59b0b291e680
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/common/sources.ce
 @@ -0,0 +1,11 @@
@@ -1316,7 +1316,7 @@ index 000000000..59b0b291e
 +SOURCES= $(_COMMON_FILES)
 diff --git a/drivers/net/wireless/mediatek/mt6797/common/sources.ddk b/drivers/net/wireless/mediatek/mt6797/common/sources.ddk
 new file mode 100644
-index 000000000..d20e1b94f
+index 000000000000..d20e1b94fb82
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/common/sources.ddk
 @@ -0,0 +1,11 @@
@@ -1333,7 +1333,7 @@ index 000000000..d20e1b94f
 +SOURCES= $(_COMMON_FILES)
 diff --git a/drivers/net/wireless/mediatek/mt6797/common/wlan_bow.c b/drivers/net/wireless/mediatek/mt6797/common/wlan_bow.c
 new file mode 100644
-index 000000000..f4abebaf5
+index 000000000000..f4abebaf5b16
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/common/wlan_bow.c
 @@ -0,0 +1,3531 @@
@@ -4870,7 +4870,7 @@ index 000000000..f4abebaf5
 +#endif /* Marked for MT6630 */
 diff --git a/drivers/net/wireless/mediatek/mt6797/common/wlan_lib.c b/drivers/net/wireless/mediatek/mt6797/common/wlan_lib.c
 new file mode 100644
-index 000000000..cbcc7d837
+index 000000000000..cbcc7d837584
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/common/wlan_lib.c
 @@ -0,0 +1,7885 @@
@@ -12761,7 +12761,7 @@ index 000000000..cbcc7d837
 +}
 diff --git a/drivers/net/wireless/mediatek/mt6797/common/wlan_oid.c b/drivers/net/wireless/mediatek/mt6797/common/wlan_oid.c
 new file mode 100644
-index 000000000..a92dfd919
+index 000000000000..a92dfd919f08
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/common/wlan_oid.c
 @@ -0,0 +1,12033 @@
@@ -24800,7 +24800,7 @@ index 000000000..a92dfd919
 +
 diff --git a/drivers/net/wireless/mediatek/mt6797/common/wlan_p2p.c b/drivers/net/wireless/mediatek/mt6797/common/wlan_p2p.c
 new file mode 100644
-index 000000000..e4d1c76ff
+index 000000000000..e4d1c76ffaf7
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/common/wlan_p2p.c
 @@ -0,0 +1,1855 @@
@@ -26661,7 +26661,7 @@ index 000000000..e4d1c76ff
 +#endif
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/CFG_Wifi_File.h b/drivers/net/wireless/mediatek/mt6797/include/CFG_Wifi_File.h
 new file mode 100644
-index 000000000..d07920590
+index 000000000000..d07920590c6a
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/CFG_Wifi_File.h
 @@ -0,0 +1,300 @@
@@ -26967,7 +26967,7 @@ index 000000000..d07920590
 +#endif /* _CFG_WIFI_FILE_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/config.h b/drivers/net/wireless/mediatek/mt6797/include/config.h
 new file mode 100644
-index 000000000..20184780b
+index 000000000000..20184780b887
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/config.h
 @@ -0,0 +1,793 @@
@@ -27766,7 +27766,7 @@ index 000000000..20184780b
 +#endif /* _CONFIG_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/debug.h b/drivers/net/wireless/mediatek/mt6797/include/debug.h
 new file mode 100644
-index 000000000..9a47920c0
+index 000000000000..9a47920c099f
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/debug.h
 @@ -0,0 +1,3813 @@
@@ -31585,7 +31585,7 @@ index 000000000..9a47920c0
 +#endif /* _DEBUG_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/link.h b/drivers/net/wireless/mediatek/mt6797/include/link.h
 new file mode 100644
-index 000000000..e8f459011
+index 000000000000..e8f4590115c8
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/link.h
 @@ -0,0 +1,330 @@
@@ -31921,7 +31921,7 @@ index 000000000..e8f459011
 +#endif /* _LINK_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/aa_fsm.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/aa_fsm.h
 new file mode 100644
-index 000000000..16c740c03
+index 000000000000..16c740c035d0
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/aa_fsm.h
 @@ -0,0 +1,211 @@
@@ -32138,7 +32138,7 @@ index 000000000..16c740c03
 +#endif /* _AA_FSM_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/ais_fsm.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/ais_fsm.h
 new file mode 100644
-index 000000000..7173b53b6
+index 000000000000..7173b53b6518
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/ais_fsm.h
 @@ -0,0 +1,637 @@
@@ -32781,7 +32781,7 @@ index 000000000..7173b53b6
 +#endif /* _AIS_FSM_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/assoc.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/assoc.h
 new file mode 100644
-index 000000000..7c4a27b32
+index 000000000000..7c4a27b32408
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/assoc.h
 @@ -0,0 +1,117 @@
@@ -32904,7 +32904,7 @@ index 000000000..7c4a27b32
 +#endif /* _ASSOC_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/auth.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/auth.h
 new file mode 100644
-index 000000000..9ea68a0fe
+index 000000000000..9ea68a0fe722
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/auth.h
 @@ -0,0 +1,135 @@
@@ -33045,7 +33045,7 @@ index 000000000..9ea68a0fe
 +#endif /* _AUTH_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/bow_fsm.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/bow_fsm.h
 new file mode 100644
-index 000000000..edd7203fd
+index 000000000000..edd7203fda59
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/bow_fsm.h
 @@ -0,0 +1,170 @@
@@ -33221,7 +33221,7 @@ index 000000000..edd7203fd
 +#endif
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/bss.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/bss.h
 new file mode 100644
-index 000000000..2e7e59ee3
+index 000000000000..2e7e59ee37bd
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/bss.h
 @@ -0,0 +1,318 @@
@@ -33545,7 +33545,7 @@ index 000000000..2e7e59ee3
 +#endif /* _BSS_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/cnm.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/cnm.h
 new file mode 100644
-index 000000000..aca82729f
+index 000000000000..aca82729f647
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/cnm.h
 @@ -0,0 +1,304 @@
@@ -33855,7 +33855,7 @@ index 000000000..aca82729f
 +#endif /* _CNM_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/cnm_mem.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/cnm_mem.h
 new file mode 100644
-index 000000000..245cc4fef
+index 000000000000..245cc4fef9ba
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/cnm_mem.h
 @@ -0,0 +1,1342 @@
@@ -35203,7 +35203,7 @@ index 000000000..245cc4fef
 +#endif /* _CNM_MEM_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/cnm_scan.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/cnm_scan.h
 new file mode 100644
-index 000000000..1b89abc68
+index 000000000000..1b89abc6828a
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/cnm_scan.h
 @@ -0,0 +1,174 @@
@@ -35383,7 +35383,7 @@ index 000000000..1b89abc68
 +#endif /* _CNM_SCAN_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/cnm_timer.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/cnm_timer.h
 new file mode 100644
-index 000000000..8123c647b
+index 000000000000..8123c647b19f
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/cnm_timer.h
 @@ -0,0 +1,248 @@
@@ -35637,7 +35637,7 @@ index 000000000..8123c647b
 +#endif /* _CNM_TIMER_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/hem_mbox.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/hem_mbox.h
 new file mode 100644
-index 000000000..8a0a81782
+index 000000000000..8a0a8178232a
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/hem_mbox.h
 @@ -0,0 +1,476 @@
@@ -36119,7 +36119,7 @@ index 000000000..8a0a81782
 +#endif /* _HEM_MBOX_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/hs20.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/hs20.h
 new file mode 100644
-index 000000000..9ad458c5d
+index 000000000000..9ad458c5dd12
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/hs20.h
 @@ -0,0 +1,138 @@
@@ -36263,7 +36263,7 @@ index 000000000..9ad458c5d
 +#endif
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/mib.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/mib.h
 new file mode 100644
-index 000000000..93a0a19f9
+index 000000000000..93a0a19f9a2c
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/mib.h
 @@ -0,0 +1,158 @@
@@ -36427,7 +36427,7 @@ index 000000000..93a0a19f9
 +#endif /* _MIB_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_assoc.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_assoc.h
 new file mode 100644
-index 000000000..c2ae9918a
+index 000000000000..c2ae9918a3a5
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_assoc.h
 @@ -0,0 +1,52 @@
@@ -36485,7 +36485,7 @@ index 000000000..c2ae9918a
 +#endif
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_bss.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_bss.h
 new file mode 100644
-index 000000000..869d7bf0e
+index 000000000000..869d7bf0ee61
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_bss.h
 @@ -0,0 +1,56 @@
@@ -36547,7 +36547,7 @@ index 000000000..869d7bf0e
 +#endif
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_dev.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_dev.h
 new file mode 100644
-index 000000000..7471b4a7d
+index 000000000000..7471b4a7d0b9
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_dev.h
 @@ -0,0 +1,205 @@
@@ -36758,7 +36758,7 @@ index 000000000..7471b4a7d
 +#endif
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_dev_state.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_dev_state.h
 new file mode 100644
-index 000000000..12ac347cb
+index 000000000000..12ac347cb187
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_dev_state.h
 @@ -0,0 +1,46 @@
@@ -36810,7 +36810,7 @@ index 000000000..12ac347cb
 +#endif
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_fsm.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_fsm.h
 new file mode 100644
-index 000000000..9c7be0dbe
+index 000000000000..9c7be0dbefc5
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_fsm.h
 @@ -0,0 +1,1654 @@
@@ -38470,7 +38470,7 @@ index 000000000..9c7be0dbe
 +#endif /* _P2P_FSM_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_func.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_func.h
 new file mode 100644
-index 000000000..b8449b332
+index 000000000000..b8449b332151
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_func.h
 @@ -0,0 +1,198 @@
@@ -38674,7 +38674,7 @@ index 000000000..b8449b332
 +#endif
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_ie.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_ie.h
 new file mode 100644
-index 000000000..2639eb094
+index 000000000000..2639eb094eae
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_ie.h
 @@ -0,0 +1,47 @@
@@ -38727,7 +38727,7 @@ index 000000000..2639eb094
 +#endif
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_rlm.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_rlm.h
 new file mode 100644
-index 000000000..bb8bcb8a7
+index 000000000000..bb8bcb8a74d0
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_rlm.h
 @@ -0,0 +1,69 @@
@@ -38802,7 +38802,7 @@ index 000000000..bb8bcb8a7
 +#endif
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_rlm_obss.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_rlm_obss.h
 new file mode 100644
-index 000000000..9fe09fbb8
+index 000000000000..9fe09fbb85f6
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_rlm_obss.h
 @@ -0,0 +1,64 @@
@@ -38872,7 +38872,7 @@ index 000000000..9fe09fbb8
 +#endif
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_role.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_role.h
 new file mode 100644
-index 000000000..95fb33f8e
+index 000000000000..95fb33f8e053
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_role.h
 @@ -0,0 +1,276 @@
@@ -39154,7 +39154,7 @@ index 000000000..95fb33f8e
 +#endif
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_role_state.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_role_state.h
 new file mode 100644
-index 000000000..804d5709c
+index 000000000000..804d5709ced7
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_role_state.h
 @@ -0,0 +1,52 @@
@@ -39212,7 +39212,7 @@ index 000000000..804d5709c
 +#endif
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_scan.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_scan.h
 new file mode 100644
-index 000000000..0928a5a67
+index 000000000000..0928a5a671ad
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_scan.h
 @@ -0,0 +1,66 @@
@@ -39284,7 +39284,7 @@ index 000000000..0928a5a67
 +#endif
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_state.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_state.h
 new file mode 100644
-index 000000000..8f0c4c156
+index 000000000000..8f0c4c1564a8
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/p2p_state.h
 @@ -0,0 +1,43 @@
@@ -39333,7 +39333,7 @@ index 000000000..8f0c4c156
 +#endif
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/privacy.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/privacy.h
 new file mode 100644
-index 000000000..0377d6191
+index 000000000000..0377d619100d
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/privacy.h
 @@ -0,0 +1,293 @@
@@ -39632,7 +39632,7 @@ index 000000000..0377d6191
 +#endif /* _PRIVACY_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/rate.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/rate.h
 new file mode 100644
-index 000000000..bfab84bf5
+index 000000000000..bfab84bf5510
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/rate.h
 @@ -0,0 +1,100 @@
@@ -39738,7 +39738,7 @@ index 000000000..bfab84bf5
 +#endif /* _RATE_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/rlm.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/rlm.h
 new file mode 100644
-index 000000000..07ffecdfa
+index 000000000000..07ffecdfabf0
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/rlm.h
 @@ -0,0 +1,442 @@
@@ -40186,7 +40186,7 @@ index 000000000..07ffecdfa
 +#endif /* _RLM_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/rlm_domain.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/rlm_domain.h
 new file mode 100644
-index 000000000..d9126bc6f
+index 000000000000..d9126bc6f35a
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/rlm_domain.h
 @@ -0,0 +1,575 @@
@@ -40767,7 +40767,7 @@ index 000000000..d9126bc6f
 +#endif /* _RLM_DOMAIN_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/rlm_obss.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/rlm_obss.h
 new file mode 100644
-index 000000000..88a25e191
+index 000000000000..88a25e19168b
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/rlm_obss.h
 @@ -0,0 +1,155 @@
@@ -40928,7 +40928,7 @@ index 000000000..88a25e191
 +#endif /* _RLM_OBSS_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/rlm_protection.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/rlm_protection.h
 new file mode 100644
-index 000000000..7cfab1a4d
+index 000000000000..7cfab1a4d891
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/rlm_protection.h
 @@ -0,0 +1,127 @@
@@ -41061,7 +41061,7 @@ index 000000000..7cfab1a4d
 +#endif /* _RLM_PROTECTION_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/rlm_txpwr_init.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/rlm_txpwr_init.h
 new file mode 100644
-index 000000000..5d67f1ad7
+index 000000000000..5d67f1ad707b
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/rlm_txpwr_init.h
 @@ -0,0 +1,1202 @@
@@ -42269,7 +42269,7 @@ index 000000000..5d67f1ad7
 +#endif /* _RLM_TXPWR_INIT_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/roaming_fsm.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/roaming_fsm.h
 new file mode 100644
-index 000000000..f255f7984
+index 000000000000..f255f79841e2
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/roaming_fsm.h
 @@ -0,0 +1,181 @@
@@ -42456,7 +42456,7 @@ index 000000000..f255f7984
 +#endif /* _ROAMING_FSM_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/rsn.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/rsn.h
 new file mode 100644
-index 000000000..b6319efdd
+index 000000000000..b6319efddde7
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/rsn.h
 @@ -0,0 +1,289 @@
@@ -42751,7 +42751,7 @@ index 000000000..b6319efdd
 +#endif /* _RSN_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/scan.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/scan.h
 new file mode 100644
-index 000000000..f75017e99
+index 000000000000..f75017e99b5d
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/scan.h
 @@ -0,0 +1,1018 @@
@@ -43775,7 +43775,7 @@ index 000000000..f75017e99
 +#endif /* _SCAN_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/sec_fsm.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/sec_fsm.h
 new file mode 100644
-index 000000000..7ce63caac
+index 000000000000..7ce63caacd7c
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/sec_fsm.h
 @@ -0,0 +1,238 @@
@@ -44019,7 +44019,7 @@ index 000000000..7ce63caac
 +#endif /* _SEC_FSM_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/stats.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/stats.h
 new file mode 100644
-index 000000000..da73c634d
+index 000000000000..da73c634dc34
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/stats.h
 @@ -0,0 +1,73 @@
@@ -44098,7 +44098,7 @@ index 000000000..da73c634d
 +/* End of stats.h */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/swcr.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/swcr.h
 new file mode 100644
-index 000000000..11053ad00
+index 000000000000..11053ad00482
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/swcr.h
 @@ -0,0 +1,196 @@
@@ -44300,7 +44300,7 @@ index 000000000..11053ad00
 +#endif
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/tdls.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/tdls.h
 new file mode 100644
-index 000000000..b08d74dc7
+index 000000000000..b08d74dc7636
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/tdls.h
 @@ -0,0 +1,422 @@
@@ -44728,7 +44728,7 @@ index 000000000..b08d74dc7
 +#endif /* _TDLS_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/wapi.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/wapi.h
 new file mode 100644
-index 000000000..730fe7329
+index 000000000000..730fe7329ec2
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/wapi.h
 @@ -0,0 +1,109 @@
@@ -44843,7 +44843,7 @@ index 000000000..730fe7329
 +#endif /* _WAPI_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/wlan_typedef.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/wlan_typedef.h
 new file mode 100644
-index 000000000..eddcfcc1d
+index 000000000000..eddcfcc1de70
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/wlan_typedef.h
 @@ -0,0 +1,112 @@
@@ -44961,7 +44961,7 @@ index 000000000..eddcfcc1d
 +#endif /* _WLAN_TYPEDEF_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/mgmt/wnm.h b/drivers/net/wireless/mediatek/mt6797/include/mgmt/wnm.h
 new file mode 100644
-index 000000000..120254d7c
+index 000000000000..120254d7c744
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/mgmt/wnm.h
 @@ -0,0 +1,92 @@
@@ -45059,7 +45059,7 @@ index 000000000..120254d7c
 +#endif /* _WNM_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/nic/adapter.h b/drivers/net/wireless/mediatek/mt6797/include/nic/adapter.h
 new file mode 100644
-index 000000000..dcef0ad6b
+index 000000000000..dcef0ad6ba13
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/nic/adapter.h
 @@ -0,0 +1,1807 @@
@@ -46872,7 +46872,7 @@ index 000000000..dcef0ad6b
 +#endif /* _ADAPTER_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/nic/bow.h b/drivers/net/wireless/mediatek/mt6797/include/nic/bow.h
 new file mode 100644
-index 000000000..f9818c6e3
+index 000000000000..f9818c6e37ac
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/nic/bow.h
 @@ -0,0 +1,327 @@
@@ -47205,7 +47205,7 @@ index 000000000..f9818c6e3
 +#endif /*_BOW_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/nic/cmd_buf.h b/drivers/net/wireless/mediatek/mt6797/include/nic/cmd_buf.h
 new file mode 100644
-index 000000000..fa1441291
+index 000000000000..fa1441291914
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/nic/cmd_buf.h
 @@ -0,0 +1,172 @@
@@ -47383,7 +47383,7 @@ index 000000000..fa1441291
 +#endif /* _CMD_BUF_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/nic/hal.h b/drivers/net/wireless/mediatek/mt6797/include/nic/hal.h
 new file mode 100644
-index 000000000..3ca1127dd
+index 000000000000..3ca1127dd48f
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/nic/hal.h
 @@ -0,0 +1,661 @@
@@ -48050,7 +48050,7 @@ index 000000000..3ca1127dd
 +#endif /* _HAL_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/nic/hif_rx.h b/drivers/net/wireless/mediatek/mt6797/include/nic/hif_rx.h
 new file mode 100644
-index 000000000..f409c1ea7
+index 000000000000..f409c1ea7ace
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/nic/hif_rx.h
 @@ -0,0 +1,177 @@
@@ -48233,7 +48233,7 @@ index 000000000..f409c1ea7
 +#endif
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/nic/hif_tx.h b/drivers/net/wireless/mediatek/mt6797/include/nic/hif_tx.h
 new file mode 100644
-index 000000000..445a7178d
+index 000000000000..445a7178da54
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/nic/hif_tx.h
 @@ -0,0 +1,201 @@
@@ -48440,7 +48440,7 @@ index 000000000..445a7178d
 +#endif /*_HIF_TX_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/nic/mac.h b/drivers/net/wireless/mediatek/mt6797/include/nic/mac.h
 new file mode 100644
-index 000000000..12520c2c6
+index 000000000000..12520c2c6424
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/nic/mac.h
 @@ -0,0 +1,2695 @@
@@ -51141,7 +51141,7 @@ index 000000000..12520c2c6
 +#endif /* _MAC_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/nic/mt6630_reg.h b/drivers/net/wireless/mediatek/mt6797/include/nic/mt6630_reg.h
 new file mode 100644
-index 000000000..96486c32c
+index 000000000000..96486c32c235
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/nic/mt6630_reg.h
 @@ -0,0 +1,331 @@
@@ -51478,7 +51478,7 @@ index 000000000..96486c32c
 +#endif /* _MT6628_REG_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/nic/nic.h b/drivers/net/wireless/mediatek/mt6797/include/nic/nic.h
 new file mode 100644
-index 000000000..230ce109f
+index 000000000000..230ce109f07b
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/nic/nic.h
 @@ -0,0 +1,541 @@
@@ -52025,7 +52025,7 @@ index 000000000..230ce109f
 +#endif /* _NIC_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/nic/nic_rate.h b/drivers/net/wireless/mediatek/mt6797/include/nic/nic_rate.h
 new file mode 100644
-index 000000000..c0ddf60a0
+index 000000000000..c0ddf60a040c
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/nic/nic_rate.h
 @@ -0,0 +1,84 @@
@@ -52115,7 +52115,7 @@ index 000000000..c0ddf60a0
 +#endif /* _NIC_RATE_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/nic/nic_rx.h b/drivers/net/wireless/mediatek/mt6797/include/nic/nic_rx.h
 new file mode 100644
-index 000000000..90640fa3d
+index 000000000000..90640fa3db9f
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/nic/nic_rx.h
 @@ -0,0 +1,1092 @@
@@ -53213,7 +53213,7 @@ index 000000000..90640fa3d
 +#endif /* _NIC_RX_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/nic/nic_tx.h b/drivers/net/wireless/mediatek/mt6797/include/nic/nic_tx.h
 new file mode 100644
-index 000000000..3faaf6e48
+index 000000000000..3faaf6e4867c
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/nic/nic_tx.h
 @@ -0,0 +1,1715 @@
@@ -54934,7 +54934,7 @@ index 000000000..3faaf6e48
 +#endif /* _NIC_TX_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/nic/p2p.h b/drivers/net/wireless/mediatek/mt6797/include/nic/p2p.h
 new file mode 100644
-index 000000000..bddd3b031
+index 000000000000..bddd3b031d56
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/nic/p2p.h
 @@ -0,0 +1,377 @@
@@ -55317,7 +55317,7 @@ index 000000000..bddd3b031
 +#endif	/*_P2P_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/nic/p2p_cmd_buf.h b/drivers/net/wireless/mediatek/mt6797/include/nic/p2p_cmd_buf.h
 new file mode 100644
-index 000000000..81ef03075
+index 000000000000..81ef030751b4
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/nic/p2p_cmd_buf.h
 @@ -0,0 +1,91 @@
@@ -55414,7 +55414,7 @@ index 000000000..81ef03075
 +#endif /* _P2P_CMD_BUF_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/nic/p2p_mac.h b/drivers/net/wireless/mediatek/mt6797/include/nic/p2p_mac.h
 new file mode 100644
-index 000000000..9834d350b
+index 000000000000..9834d350b235
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/nic/p2p_mac.h
 @@ -0,0 +1,343 @@
@@ -55763,7 +55763,7 @@ index 000000000..9834d350b
 +#endif
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/nic/p2p_nic.h b/drivers/net/wireless/mediatek/mt6797/include/nic/p2p_nic.h
 new file mode 100644
-index 000000000..c4b6aee9b
+index 000000000000..c4b6aee9be7c
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/nic/p2p_nic.h
 @@ -0,0 +1,61 @@
@@ -55830,7 +55830,7 @@ index 000000000..c4b6aee9b
 +#endif
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/nic/p2p_nic_cmd_event.h b/drivers/net/wireless/mediatek/mt6797/include/nic/p2p_nic_cmd_event.h
 new file mode 100644
-index 000000000..23a82a459
+index 000000000000..23a82a4594c4
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/nic/p2p_nic_cmd_event.h
 @@ -0,0 +1,70 @@
@@ -55906,7 +55906,7 @@ index 000000000..23a82a459
 +#endif
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/nic/que_mgt.h b/drivers/net/wireless/mediatek/mt6797/include/nic/que_mgt.h
 new file mode 100644
-index 000000000..2c6013054
+index 000000000000..2c601305488b
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/nic/que_mgt.h
 @@ -0,0 +1,1179 @@
@@ -57091,7 +57091,7 @@ index 000000000..2c6013054
 +#endif /* _QUE_MGT_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/nic/wlan_def.h b/drivers/net/wireless/mediatek/mt6797/include/nic/wlan_def.h
 new file mode 100644
-index 000000000..5584d1b97
+index 000000000000..5584d1b97eca
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/nic/wlan_def.h
 @@ -0,0 +1,1130 @@
@@ -58227,7 +58227,7 @@ index 000000000..5584d1b97
 +#endif /* _WLAN_DEF_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/nic_cmd_event.h b/drivers/net/wireless/mediatek/mt6797/include/nic_cmd_event.h
 new file mode 100644
-index 000000000..9712d89cd
+index 000000000000..9712d89cd7c9
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/nic_cmd_event.h
 @@ -0,0 +1,1792 @@
@@ -60025,7 +60025,7 @@ index 000000000..9712d89cd
 +#endif /* _NIC_CMD_EVENT_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/nic_init_cmd_event.h b/drivers/net/wireless/mediatek/mt6797/include/nic_init_cmd_event.h
 new file mode 100644
-index 000000000..e04c468a5
+index 000000000000..e04c468a5e6b
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/nic_init_cmd_event.h
 @@ -0,0 +1,175 @@
@@ -60206,7 +60206,7 @@ index 000000000..e04c468a5
 +#endif /* _NIC_INIT_CMD_EVENT_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/p2p_precomp.h b/drivers/net/wireless/mediatek/mt6797/include/p2p_precomp.h
 new file mode 100644
-index 000000000..e9481ad9b
+index 000000000000..e9481ad9bed6
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/p2p_precomp.h
 @@ -0,0 +1,201 @@
@@ -60413,7 +60413,7 @@ index 000000000..e9481ad9b
 +#endif /*_P2P_PRECOMP_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/p2p_typedef.h b/drivers/net/wireless/mediatek/mt6797/include/p2p_typedef.h
 new file mode 100644
-index 000000000..cbdbb9605
+index 000000000000..cbdbb9605622
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/p2p_typedef.h
 @@ -0,0 +1,168 @@
@@ -60587,7 +60587,7 @@ index 000000000..cbdbb9605
 +#endif /* _P2P_TYPEDEF_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/precomp.h b/drivers/net/wireless/mediatek/mt6797/include/precomp.h
 new file mode 100644
-index 000000000..d2276e781
+index 000000000000..d2276e781a29
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/precomp.h
 @@ -0,0 +1,236 @@
@@ -60829,7 +60829,7 @@ index 000000000..d2276e781
 +#endif /* _PRECOMP_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/pwr_mgt.h b/drivers/net/wireless/mediatek/mt6797/include/pwr_mgt.h
 new file mode 100644
-index 000000000..8b05ff767
+index 000000000000..8b05ff767cbc
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/pwr_mgt.h
 @@ -0,0 +1,99 @@
@@ -60934,7 +60934,7 @@ index 000000000..8b05ff767
 +#endif /* _PWR_MGT_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/queue.h b/drivers/net/wireless/mediatek/mt6797/include/queue.h
 new file mode 100644
-index 000000000..44134b7b0
+index 000000000000..44134b7b0b7f
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/queue.h
 @@ -0,0 +1,180 @@
@@ -61120,7 +61120,7 @@ index 000000000..44134b7b0
 +#endif /* _QUEUE_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/rftest.h b/drivers/net/wireless/mediatek/mt6797/include/rftest.h
 new file mode 100644
-index 000000000..81272b1fc
+index 000000000000..81272b1fc66e
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/rftest.h
 @@ -0,0 +1,280 @@
@@ -61406,7 +61406,7 @@ index 000000000..81272b1fc
 +#endif /* _RFTEST_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/typedef.h b/drivers/net/wireless/mediatek/mt6797/include/typedef.h
 new file mode 100644
-index 000000000..4b01e36b6
+index 000000000000..4b01e36b6072
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/typedef.h
 @@ -0,0 +1,147 @@
@@ -61559,7 +61559,7 @@ index 000000000..4b01e36b6
 +#endif /* _TYPEDEF_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/wlan_bow.h b/drivers/net/wireless/mediatek/mt6797/include/wlan_bow.h
 new file mode 100644
-index 000000000..e893cd833
+index 000000000000..e893cd8338e9
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/wlan_bow.h
 @@ -0,0 +1,360 @@
@@ -61925,7 +61925,7 @@ index 000000000..e893cd833
 +#endif /* _WLAN_BOW_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/wlan_lib.h b/drivers/net/wireless/mediatek/mt6797/include/wlan_lib.h
 new file mode 100644
-index 000000000..6d0da1c87
+index 000000000000..6d0da1c87aeb
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/wlan_lib.h
 @@ -0,0 +1,1391 @@
@@ -63322,7 +63322,7 @@ index 000000000..6d0da1c87
 +			  IN P_MSDU_INFO_T prMsduInfo, IN ENUM_TX_RESULT_CODE_T rTxDoneStatus);
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/wlan_oid.h b/drivers/net/wireless/mediatek/mt6797/include/wlan_oid.h
 new file mode 100644
-index 000000000..d9a89eff7
+index 000000000000..d9a89eff7239
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/wlan_oid.h
 @@ -0,0 +1,1799 @@
@@ -65127,7 +65127,7 @@ index 000000000..d9a89eff7
 +#endif /* _WLAN_OID_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/include/wlan_p2p.h b/drivers/net/wireless/mediatek/mt6797/include/wlan_p2p.h
 new file mode 100644
-index 000000000..b032ac054
+index 000000000000..b032ac0545ea
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/include/wlan_p2p.h
 @@ -0,0 +1,327 @@
@@ -65460,7 +65460,7 @@ index 000000000..b032ac054
 +#endif /* _WLAN_P2P_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/lint/co.lnt b/drivers/net/wireless/mediatek/mt6797/lint/co.lnt
 new file mode 100644
-index 000000000..b3f0f527b
+index 000000000000..b3f0f527b3ce
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/lint/co.lnt
 @@ -0,0 +1,32 @@
@@ -65498,7 +65498,7 @@ index 000000000..b3f0f527b
 +
 diff --git a/drivers/net/wireless/mediatek/mt6797/lint/mt6620.lnt b/drivers/net/wireless/mediatek/mt6797/lint/mt6620.lnt
 new file mode 100644
-index 000000000..3b5c2190d
+index 000000000000..3b5c2190dddf
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/lint/mt6620.lnt
 @@ -0,0 +1,87 @@
@@ -65591,7 +65591,7 @@ index 000000000..3b5c2190d
 +-efunc(416,wlanoidQueryCapability)
 diff --git a/drivers/net/wireless/mediatek/mt6797/lint/mtk-sup.lnt b/drivers/net/wireless/mediatek/mt6797/lint/mtk-sup.lnt
 new file mode 100644
-index 000000000..f1697e02f
+index 000000000000..f1697e02f6e4
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/lint/mtk-sup.lnt
 @@ -0,0 +1,27 @@
@@ -65624,7 +65624,7 @@ index 000000000..f1697e02f
 +
 diff --git a/drivers/net/wireless/mediatek/mt6797/lint/mtk.lnt b/drivers/net/wireless/mediatek/mt6797/lint/mtk.lnt
 new file mode 100644
-index 000000000..e0adf70ef
+index 000000000000..e0adf70ef362
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/lint/mtk.lnt
 @@ -0,0 +1,169 @@
@@ -65799,7 +65799,7 @@ index 000000000..e0adf70ef
 +
 diff --git a/drivers/net/wireless/mediatek/mt6797/lint/options.lnt b/drivers/net/wireless/mediatek/mt6797/lint/options.lnt
 new file mode 100644
-index 000000000..dcf0f439a
+index 000000000000..dcf0f439a8af
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/lint/options.lnt
 @@ -0,0 +1,84 @@
@@ -65889,7 +65889,7 @@ index 000000000..dcf0f439a
 +-rw_asgn(__asm, _to_brackets)
 diff --git a/drivers/net/wireless/mediatek/mt6797/lint/std.lnt b/drivers/net/wireless/mediatek/mt6797/lint/std.lnt
 new file mode 100644
-index 000000000..ad1e84116
+index 000000000000..ad1e84116824
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/lint/std.lnt
 @@ -0,0 +1,12 @@
@@ -65907,7 +65907,7 @@ index 000000000..ad1e84116
 +mt6620.lnt
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/aaa_fsm.c b/drivers/net/wireless/mediatek/mt6797/mgmt/aaa_fsm.c
 new file mode 100644
-index 000000000..761b1aacd
+index 000000000000..761b1aacd8f2
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/aaa_fsm.c
 @@ -0,0 +1,1392 @@
@@ -67305,7 +67305,7 @@ index 000000000..761b1aacd
 +#endif
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/ais_fsm.c b/drivers/net/wireless/mediatek/mt6797/mgmt/ais_fsm.c
 new file mode 100644
-index 000000000..853afdb4b
+index 000000000000..853afdb4be33
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/ais_fsm.c
 @@ -0,0 +1,5241 @@
@@ -72552,7 +72552,7 @@ index 000000000..853afdb4b
 +}				/* aisFuncValidateRxActionFrame */
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/assoc.c b/drivers/net/wireless/mediatek/mt6797/mgmt/assoc.c
 new file mode 100644
-index 000000000..9db12f3c7
+index 000000000000..9db12f3c71a6
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/assoc.c
 @@ -0,0 +1,1987 @@
@@ -74545,7 +74545,7 @@ index 000000000..9db12f3c7
 +#endif /* CFG_SUPPORT_AAA */
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/auth.c b/drivers/net/wireless/mediatek/mt6797/mgmt/auth.c
 new file mode 100644
-index 000000000..da9774d55
+index 000000000000..da9774d55e4b
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/auth.c
 @@ -0,0 +1,1226 @@
@@ -75777,7 +75777,7 @@ index 000000000..da9774d55
 +}				/* end of authProcessRxAuth1Frame() */
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/bss.c b/drivers/net/wireless/mediatek/mt6797/mgmt/bss.c
 new file mode 100644
-index 000000000..beac5ad5b
+index 000000000000..beac5ad5b7ab
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/bss.c
 @@ -0,0 +1,2910 @@
@@ -78693,7 +78693,7 @@ index 000000000..beac5ad5b
 +}
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/cnm.c b/drivers/net/wireless/mediatek/mt6797/mgmt/cnm.c
 new file mode 100644
-index 000000000..522b25538
+index 000000000000..522b25538337
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/cnm.c
 @@ -0,0 +1,1042 @@
@@ -79741,7 +79741,7 @@ index 000000000..522b25538
 +}
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/cnm_mem.c b/drivers/net/wireless/mediatek/mt6797/mgmt/cnm_mem.c
 new file mode 100644
-index 000000000..1591a8014
+index 000000000000..1591a8014b7e
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/cnm_mem.c
 @@ -0,0 +1,1879 @@
@@ -81626,7 +81626,7 @@ index 000000000..1591a8014
 +#endif
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/cnm_timer.c b/drivers/net/wireless/mediatek/mt6797/mgmt/cnm_timer.c
 new file mode 100644
-index 000000000..fa4c1fca3
+index 000000000000..fa4c1fca37d4
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/cnm_timer.c
 @@ -0,0 +1,428 @@
@@ -82060,7 +82060,7 @@ index 000000000..fa4c1fca3
 +}
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/hem_mbox.c b/drivers/net/wireless/mediatek/mt6797/mgmt/hem_mbox.c
 new file mode 100644
-index 000000000..a5fc7b643
+index 000000000000..a5fc7b643a5d
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/hem_mbox.c
 @@ -0,0 +1,859 @@
@@ -82925,7 +82925,7 @@ index 000000000..a5fc7b643
 +}
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/hs20.c b/drivers/net/wireless/mediatek/mt6797/mgmt/hs20.c
 new file mode 100644
-index 000000000..2e09f5522
+index 000000000000..2e09f5522b98
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/hs20.c
 @@ -0,0 +1,511 @@
@@ -83442,7 +83442,7 @@ index 000000000..2e09f5522
 +#endif /* CFG_SUPPORT_PASSPOINT */
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/makefile b/drivers/net/wireless/mediatek/mt6797/mgmt/makefile
 new file mode 100644
-index 000000000..89b63909c
+index 000000000000..89b63909cac9
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/makefile
 @@ -0,0 +1,8 @@
@@ -83456,7 +83456,7 @@ index 000000000..89b63909c
 +!INCLUDE $(_WINDOW_MAKE_ROOT)\makefile.def
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/mib.c b/drivers/net/wireless/mediatek/mt6797/mgmt/mib.c
 new file mode 100644
-index 000000000..01908722b
+index 000000000000..01908722b7b3
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/mib.c
 @@ -0,0 +1,116 @@
@@ -83578,7 +83578,7 @@ index 000000000..01908722b
 +*/
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_assoc.c b/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_assoc.c
 new file mode 100644
-index 000000000..2969c6300
+index 000000000000..2969c63009b9
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_assoc.c
 @@ -0,0 +1,87 @@
@@ -83671,7 +83671,7 @@ index 000000000..2969c6300
 +}
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_bss.c b/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_bss.c
 new file mode 100644
-index 000000000..784a122ac
+index 000000000000..784a122ac457
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_bss.c
 @@ -0,0 +1,58 @@
@@ -83735,7 +83735,7 @@ index 000000000..784a122ac
 + */
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_dev_fsm.c b/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_dev_fsm.c
 new file mode 100644
-index 000000000..0c03f3bbe
+index 000000000000..0c03f3bbe37c
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_dev_fsm.c
 @@ -0,0 +1,1127 @@
@@ -84868,7 +84868,7 @@ index 000000000..0c03f3bbe
 +#endif /* RunEventWfdSettingUpdate */
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_dev_state.c b/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_dev_state.c
 new file mode 100644
-index 000000000..d8915fedf
+index 000000000000..d8915fedfa08
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_dev_state.c
 @@ -0,0 +1,279 @@
@@ -85153,7 +85153,7 @@ index 000000000..d8915fedf
 +}				/* p2pDevSateAbort_OFF_CHNL_TX */
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_fsm.c b/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_fsm.c
 new file mode 100644
-index 000000000..42b31067b
+index 000000000000..42b31067b7f2
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_fsm.c
 @@ -0,0 +1,2268 @@
@@ -87427,7 +87427,7 @@ index 000000000..42b31067b
 +#endif /* CFG_ENABLE_WIFI_DIRECT */
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_func.c b/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_func.c
 new file mode 100644
-index 000000000..58c4c23ab
+index 000000000000..58c4c23ab16e
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_func.c
 @@ -0,0 +1,3971 @@
@@ -91404,7 +91404,7 @@ index 000000000..58c4c23ab
 +}
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_ie.c b/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_ie.c
 new file mode 100644
-index 000000000..54b71f9e8
+index 000000000000..54b71f9e8170
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_ie.c
 @@ -0,0 +1,134 @@
@@ -91544,7 +91544,7 @@ index 000000000..54b71f9e8
 +/* wfdFuncAppendAttriDevInfo */
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_rlm.c b/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_rlm.c
 new file mode 100644
-index 000000000..1a6d52d99
+index 000000000000..1a6d52d99c31
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_rlm.c
 @@ -0,0 +1,969 @@
@@ -92519,7 +92519,7 @@ index 000000000..1a6d52d99
 +}
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_rlm_obss.c b/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_rlm_obss.c
 new file mode 100644
-index 000000000..980aafa11
+index 000000000000..980aafa1175c
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_rlm_obss.c
 @@ -0,0 +1,309 @@
@@ -92834,7 +92834,7 @@ index 000000000..980aafa11
 +}
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_role_fsm.c b/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_role_fsm.c
 new file mode 100644
-index 000000000..7cdc32803
+index 000000000000..7cdc32803d49
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_role_fsm.c
 @@ -0,0 +1,1713 @@
@@ -94553,7 +94553,7 @@ index 000000000..7cdc32803
 +}				/* p2pProcessEvent_UpdateNOAParam */
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_role_state.c b/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_role_state.c
 new file mode 100644
-index 000000000..c2fc2f8ed
+index 000000000000..c2fc2f8ed0ff
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_role_state.c
 @@ -0,0 +1,317 @@
@@ -94876,7 +94876,7 @@ index 000000000..c2fc2f8ed
 +}
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_scan.c b/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_scan.c
 new file mode 100644
-index 000000000..5b1d77fa7
+index 000000000000..5b1d77fa73ca
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_scan.c
 @@ -0,0 +1,229 @@
@@ -95111,7 +95111,7 @@ index 000000000..5b1d77fa7
 +}				/* scanP2pSearchDesc */
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_state.c b/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_state.c
 new file mode 100644
-index 000000000..1a3221e92
+index 000000000000..1a3221e9252b
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/p2p_state.c
 @@ -0,0 +1,260 @@
@@ -95377,7 +95377,7 @@ index 000000000..1a3221e92
 +}				/* p2pStateAbort_GC_JOIN */
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/privacy.c b/drivers/net/wireless/mediatek/mt6797/mgmt/privacy.c
 new file mode 100644
-index 000000000..cfd9cb08f
+index 000000000000..cfd9cb08ff54
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/privacy.c
 @@ -0,0 +1,1319 @@
@@ -96702,7 +96702,7 @@ index 000000000..cfd9cb08f
 +#endif
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/rate.c b/drivers/net/wireless/mediatek/mt6797/mgmt/rate.c
 new file mode 100644
-index 000000000..982cd1db2
+index 000000000000..982cd1db25d9
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/rate.c
 @@ -0,0 +1,518 @@
@@ -97226,7 +97226,7 @@ index 000000000..982cd1db2
 +#endif
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/rlm.c b/drivers/net/wireless/mediatek/mt6797/mgmt/rlm.c
 new file mode 100644
-index 000000000..707229026
+index 000000000000..70722902689a
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/rlm.c
 @@ -0,0 +1,2856 @@
@@ -100088,7 +100088,7 @@ index 000000000..707229026
 +#endif
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/rlm_domain.c b/drivers/net/wireless/mediatek/mt6797/mgmt/rlm_domain.c
 new file mode 100644
-index 000000000..f42816a5a
+index 000000000000..f42816a5a139
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/rlm_domain.c
 @@ -0,0 +1,1780 @@
@@ -101874,7 +101874,7 @@ index 000000000..f42816a5a
 +#endif
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/rlm_obss.c b/drivers/net/wireless/mediatek/mt6797/mgmt/rlm_obss.c
 new file mode 100644
-index 000000000..3e43e557a
+index 000000000000..3e43e557a37f
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/rlm_obss.c
 @@ -0,0 +1,447 @@
@@ -102327,7 +102327,7 @@ index 000000000..3e43e557a
 +}
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/rlm_protection.c b/drivers/net/wireless/mediatek/mt6797/mgmt/rlm_protection.c
 new file mode 100644
-index 000000000..9c7d215fc
+index 000000000000..9c7d215fc95b
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/rlm_protection.c
 @@ -0,0 +1,110 @@
@@ -102443,7 +102443,7 @@ index 000000000..9c7d215fc
 +*/
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/roaming_fsm.c b/drivers/net/wireless/mediatek/mt6797/mgmt/roaming_fsm.c
 new file mode 100644
-index 000000000..88b5295ea
+index 000000000000..88b5295ea981
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/roaming_fsm.c
 @@ -0,0 +1,562 @@
@@ -103011,7 +103011,7 @@ index 000000000..88b5295ea
 +#endif
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/rsn.c b/drivers/net/wireless/mediatek/mt6797/mgmt/rsn.c
 new file mode 100644
-index 000000000..dba11e020
+index 000000000000..dba11e02080c
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/rsn.c
 @@ -0,0 +1,2621 @@
@@ -105638,7 +105638,7 @@ index 000000000..dba11e020
 +#endif
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/saa_fsm.c b/drivers/net/wireless/mediatek/mt6797/mgmt/saa_fsm.c
 new file mode 100644
-index 000000000..9222cf0ba
+index 000000000000..9222cf0ba2f0
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/saa_fsm.c
 @@ -0,0 +1,2075 @@
@@ -107719,7 +107719,7 @@ index 000000000..9222cf0ba
 +}
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/scan.c b/drivers/net/wireless/mediatek/mt6797/mgmt/scan.c
 new file mode 100644
-index 000000000..77c8c7552
+index 000000000000..77c8c75520df
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/scan.c
 @@ -0,0 +1,3074 @@
@@ -110799,7 +110799,7 @@ index 000000000..77c8c7552
 +#endif /* CFG_SUPPORT_AGPS_ASSIST */
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/scan_fsm.c b/drivers/net/wireless/mediatek/mt6797/mgmt/scan_fsm.c
 new file mode 100644
-index 000000000..73dd61ff4
+index 000000000000..73dd61ff4f9d
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/scan_fsm.c
 @@ -0,0 +1,2357 @@
@@ -113162,7 +113162,7 @@ index 000000000..73dd61ff4
 +}
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/sec_fsm.c b/drivers/net/wireless/mediatek/mt6797/mgmt/sec_fsm.c
 new file mode 100644
-index 000000000..d9f5da5ac
+index 000000000000..d9f5da5ac750
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/sec_fsm.c
 @@ -0,0 +1,1125 @@
@@ -114293,7 +114293,7 @@ index 000000000..d9f5da5ac
 +}				/* end of secFsmRunEventEndOfCounterMeasure */
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/sources.ce b/drivers/net/wireless/mediatek/mt6797/mgmt/sources.ce
 new file mode 100644
-index 000000000..132fd5bd3
+index 000000000000..132fd5bd38ed
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/sources.ce
 @@ -0,0 +1,11 @@
@@ -114310,7 +114310,7 @@ index 000000000..132fd5bd3
 +SOURCES= $(_MGMT_FILES)
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/sources.ddk b/drivers/net/wireless/mediatek/mt6797/mgmt/sources.ddk
 new file mode 100644
-index 000000000..2548266f9
+index 000000000000..2548266f9e23
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/sources.ddk
 @@ -0,0 +1,11 @@
@@ -114327,7 +114327,7 @@ index 000000000..2548266f9
 +SOURCES= $(_MGMT_FILES)
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/stats.c b/drivers/net/wireless/mediatek/mt6797/mgmt/stats.c
 new file mode 100644
-index 000000000..00fa2b232
+index 000000000000..00fa2b232b55
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/stats.c
 @@ -0,0 +1,274 @@
@@ -114607,7 +114607,7 @@ index 000000000..00fa2b232
 +/* End of stats.c */
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/swcr.c b/drivers/net/wireless/mediatek/mt6797/mgmt/swcr.c
 new file mode 100644
-index 000000000..c17ab64aa
+index 000000000000..c17ab64aa803
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/swcr.c
 @@ -0,0 +1,1356 @@
@@ -115969,7 +115969,7 @@ index 000000000..c17ab64aa
 +#endif /* CFG_SUPPORT_SWCR */
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/tdls.c b/drivers/net/wireless/mediatek/mt6797/mgmt/tdls.c
 new file mode 100644
-index 000000000..438fdeb0b
+index 000000000000..438fdeb0bb88
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/tdls.c
 @@ -0,0 +1,2022 @@
@@ -117997,7 +117997,7 @@ index 000000000..438fdeb0b
 +/* End of tdls.c */
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/tkip_mic.c b/drivers/net/wireless/mediatek/mt6797/mgmt/tkip_mic.c
 new file mode 100644
-index 000000000..81cdf13c5
+index 000000000000..81cdf13c5e54
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/tkip_mic.c
 @@ -0,0 +1,505 @@
@@ -118508,7 +118508,7 @@ index 000000000..81cdf13c5
 +}				/* tkipMicDecapsulate */
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/wapi.c b/drivers/net/wireless/mediatek/mt6797/mgmt/wapi.c
 new file mode 100644
-index 000000000..8153f4ef1
+index 000000000000..8153f4ef176b
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/wapi.c
 @@ -0,0 +1,504 @@
@@ -119018,7 +119018,7 @@ index 000000000..8153f4ef1
 +#endif
 diff --git a/drivers/net/wireless/mediatek/mt6797/mgmt/wnm.c b/drivers/net/wireless/mediatek/mt6797/mgmt/wnm.c
 new file mode 100644
-index 000000000..75a5c7a27
+index 000000000000..75a5c7a277a3
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/mgmt/wnm.c
 @@ -0,0 +1,320 @@
@@ -119344,7 +119344,7 @@ index 000000000..75a5c7a27
 +#endif /* CFG_SUPPORT_802_11V */
 diff --git a/drivers/net/wireless/mediatek/mt6797/nic/cmd_buf.c b/drivers/net/wireless/mediatek/mt6797/nic/cmd_buf.c
 new file mode 100644
-index 000000000..e03912f7f
+index 000000000000..e03912f7fd07
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/nic/cmd_buf.c
 @@ -0,0 +1,268 @@
@@ -119618,7 +119618,7 @@ index 000000000..e03912f7f
 +}				/* end of cmdBufFreeCmdPacket() */
 diff --git a/drivers/net/wireless/mediatek/mt6797/nic/makefile b/drivers/net/wireless/mediatek/mt6797/nic/makefile
 new file mode 100644
-index 000000000..89b63909c
+index 000000000000..89b63909cac9
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/nic/makefile
 @@ -0,0 +1,8 @@
@@ -119632,7 +119632,7 @@ index 000000000..89b63909c
 +!INCLUDE $(_WINDOW_MAKE_ROOT)\makefile.def
 diff --git a/drivers/net/wireless/mediatek/mt6797/nic/nic.c b/drivers/net/wireless/mediatek/mt6797/nic/nic.c
 new file mode 100644
-index 000000000..c0ee64bc0
+index 000000000000..c0ee64bc0798
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/nic/nic.c
 @@ -0,0 +1,4454 @@
@@ -124092,7 +124092,7 @@ index 000000000..c0ee64bc0
 +}
 diff --git a/drivers/net/wireless/mediatek/mt6797/nic/nic_cmd_event.c b/drivers/net/wireless/mediatek/mt6797/nic/nic_cmd_event.c
 new file mode 100644
-index 000000000..c0c3b0eac
+index 000000000000..c0c3b0eacf2d
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/nic/nic_cmd_event.c
 @@ -0,0 +1,1830 @@
@@ -125928,7 +125928,7 @@ index 000000000..c0c3b0eac
 +#endif
 diff --git a/drivers/net/wireless/mediatek/mt6797/nic/nic_pwr_mgt.c b/drivers/net/wireless/mediatek/mt6797/nic/nic_pwr_mgt.c
 new file mode 100644
-index 000000000..a35cace1f
+index 000000000000..a35cace1fc56
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/nic/nic_pwr_mgt.c
 @@ -0,0 +1,679 @@
@@ -126613,7 +126613,7 @@ index 000000000..a35cace1f
 +}
 diff --git a/drivers/net/wireless/mediatek/mt6797/nic/nic_rate.c b/drivers/net/wireless/mediatek/mt6797/nic/nic_rate.c
 new file mode 100644
-index 000000000..0a53262e9
+index 000000000000..0a53262e9d10
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/nic/nic_rate.c
 @@ -0,0 +1,231 @@
@@ -126850,7 +126850,7 @@ index 000000000..0a53262e9
 +}
 diff --git a/drivers/net/wireless/mediatek/mt6797/nic/nic_rx.c b/drivers/net/wireless/mediatek/mt6797/nic/nic_rx.c
 new file mode 100644
-index 000000000..5e7c3794f
+index 000000000000..5e7c3794ffbe
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/nic/nic_rx.c
 @@ -0,0 +1,5040 @@
@@ -131896,7 +131896,7 @@ index 000000000..5e7c3794f
 +}
 diff --git a/drivers/net/wireless/mediatek/mt6797/nic/nic_tx.c b/drivers/net/wireless/mediatek/mt6797/nic/nic_tx.c
 new file mode 100644
-index 000000000..eafc610f9
+index 000000000000..eafc610f9d4c
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/nic/nic_tx.c
 @@ -0,0 +1,3790 @@
@@ -135692,7 +135692,7 @@ index 000000000..eafc610f9
 +}
 diff --git a/drivers/net/wireless/mediatek/mt6797/nic/p2p_nic.c b/drivers/net/wireless/mediatek/mt6797/nic/p2p_nic.c
 new file mode 100644
-index 000000000..98de10bd4
+index 000000000000..98de10bd48f3
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/nic/p2p_nic.c
 @@ -0,0 +1,186 @@
@@ -135884,7 +135884,7 @@ index 000000000..98de10bd4
 +}				/* nicRxAddP2pDevice */
 diff --git a/drivers/net/wireless/mediatek/mt6797/nic/que_mgt.c b/drivers/net/wireless/mediatek/mt6797/nic/que_mgt.c
 new file mode 100644
-index 000000000..66afb8fa9
+index 000000000000..66afb8fa92c6
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/nic/que_mgt.c
 @@ -0,0 +1,6445 @@
@@ -142335,7 +142335,7 @@ index 000000000..66afb8fa9
 +
 diff --git a/drivers/net/wireless/mediatek/mt6797/nic/sources.ce b/drivers/net/wireless/mediatek/mt6797/nic/sources.ce
 new file mode 100644
-index 000000000..4627c5219
+index 000000000000..4627c52191a3
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/nic/sources.ce
 @@ -0,0 +1,11 @@
@@ -142352,7 +142352,7 @@ index 000000000..4627c5219
 +SOURCES= $(_NIC_FILES)
 diff --git a/drivers/net/wireless/mediatek/mt6797/nic/sources.ddk b/drivers/net/wireless/mediatek/mt6797/nic/sources.ddk
 new file mode 100644
-index 000000000..a233fee2a
+index 000000000000..a233fee2a36f
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/nic/sources.ddk
 @@ -0,0 +1,11 @@
@@ -142369,10 +142369,10 @@ index 000000000..a233fee2a
 +SOURCES= $(_NIC_FILES)
 diff --git a/drivers/net/wireless/mediatek/mt6797/nic/test.c b/drivers/net/wireless/mediatek/mt6797/nic/test.c
 new file mode 100644
-index 000000000..e69de29bb
+index 000000000000..e69de29bb2d1
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/dirs b/drivers/net/wireless/mediatek/mt6797/os/dirs
 new file mode 100644
-index 000000000..3dc42d39e
+index 000000000000..3dc42d39e648
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/dirs
 @@ -0,0 +1,3 @@
@@ -142381,7 +142381,7 @@ index 000000000..3dc42d39e
 +
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/gl_bow.c b/drivers/net/wireless/mediatek/mt6797/os/linux/gl_bow.c
 new file mode 100644
-index 000000000..b5b67d9ec
+index 000000000000..b5b67d9ecc43
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/gl_bow.c
 @@ -0,0 +1,1346 @@
@@ -143733,7 +143733,7 @@ index 000000000..b5b67d9ec
 +#endif /* CFG_ENABLE_BT_OVER_WIFI */
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/gl_cfg80211.c b/drivers/net/wireless/mediatek/mt6797/os/linux/gl_cfg80211.c
 new file mode 100644
-index 000000000..c302ae845
+index 000000000000..c302ae845ec3
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/gl_cfg80211.c
 @@ -0,0 +1,3019 @@
@@ -146758,7 +146758,7 @@ index 000000000..c302ae845
 +}
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/gl_init.c b/drivers/net/wireless/mediatek/mt6797/os/linux/gl_init.c
 new file mode 100644
-index 000000000..765094381
+index 000000000000..765094381db2
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/gl_init.c
 @@ -0,0 +1,3302 @@
@@ -150066,7 +150066,7 @@ index 000000000..765094381
 +MODULE_LICENSE("GPL");
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/gl_kal.c b/drivers/net/wireless/mediatek/mt6797/os/linux/gl_kal.c
 new file mode 100644
-index 000000000..0bdce3249
+index 000000000000..0bdce32490f6
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/gl_kal.c
 @@ -0,0 +1,5647 @@
@@ -155719,7 +155719,7 @@ index 000000000..0bdce3249
 +}
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/gl_p2p.c b/drivers/net/wireless/mediatek/mt6797/os/linux/gl_p2p.c
 new file mode 100644
-index 000000000..7d515b128
+index 000000000000..7d515b128729
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/gl_p2p.c
 @@ -0,0 +1,4715 @@
@@ -160440,7 +160440,7 @@ index 000000000..7d515b128
 +#endif
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/gl_p2p_cfg80211.c b/drivers/net/wireless/mediatek/mt6797/os/linux/gl_p2p_cfg80211.c
 new file mode 100644
-index 000000000..88418728d
+index 000000000000..88418728d6e5
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/gl_p2p_cfg80211.c
 @@ -0,0 +1,2434 @@
@@ -162880,7 +162880,7 @@ index 000000000..88418728d
 +}
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/gl_p2p_init.c b/drivers/net/wireless/mediatek/mt6797/os/linux/gl_p2p_init.c
 new file mode 100644
-index 000000000..5b65311a3
+index 000000000000..5b65311a321e
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/gl_p2p_init.c
 @@ -0,0 +1,244 @@
@@ -163130,7 +163130,7 @@ index 000000000..5b65311a3
 +#endif
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/gl_p2p_kal.c b/drivers/net/wireless/mediatek/mt6797/os/linux/gl_p2p_kal.c
 new file mode 100644
-index 000000000..579b9d143
+index 000000000000..579b9d1435be
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/gl_p2p_kal.c
 @@ -0,0 +1,1345 @@
@@ -164481,7 +164481,7 @@ index 000000000..579b9d143
 +#endif
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/gl_proc.c b/drivers/net/wireless/mediatek/mt6797/os/linux/gl_proc.c
 new file mode 100644
-index 000000000..808908b4b
+index 000000000000..808908b4b20e
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/gl_proc.c
 @@ -0,0 +1,782 @@
@@ -165269,7 +165269,7 @@ index 000000000..808908b4b
 +
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/gl_rst.c b/drivers/net/wireless/mediatek/mt6797/os/linux/gl_rst.c
 new file mode 100644
-index 000000000..440ebd7c5
+index 000000000000..440ebd7c50c6
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/gl_rst.c
 @@ -0,0 +1,55 @@
@@ -165330,7 +165330,7 @@ index 000000000..440ebd7c5
 +}
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/gl_vendor.c b/drivers/net/wireless/mediatek/mt6797/os/linux/gl_vendor.c
 new file mode 100644
-index 000000000..af7c4f402
+index 000000000000..af7c4f402fb2
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/gl_vendor.c
 @@ -0,0 +1,1019 @@
@@ -166355,7 +166355,7 @@ index 000000000..af7c4f402
 +}
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/gl_wext.c b/drivers/net/wireless/mediatek/mt6797/os/linux/gl_wext.c
 new file mode 100644
-index 000000000..984a5735b
+index 000000000000..984a5735b127
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/gl_wext.c
 @@ -0,0 +1,4084 @@
@@ -170445,7 +170445,7 @@ index 000000000..984a5735b
 +#endif /* WIRELESS_EXT */
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/gl_wext_priv.c b/drivers/net/wireless/mediatek/mt6797/os/linux/gl_wext_priv.c
 new file mode 100644
-index 000000000..8bd7b790d
+index 000000000000..8bd7b790d69e
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/gl_wext_priv.c
 @@ -0,0 +1,3520 @@
@@ -173971,7 +173971,7 @@ index 000000000..8bd7b790d
 +}				/* priv_support_driver_cmd */
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ahb_sdioLike/ahb.c b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ahb_sdioLike/ahb.c
 new file mode 100644
-index 000000000..37df7f329
+index 000000000000..37df7f32972a
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ahb_sdioLike/ahb.c
 @@ -0,0 +1,346 @@
@@ -174323,7 +174323,7 @@ index 000000000..37df7f329
 +}
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ahb_sdioLike/ahb_pdma.c b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ahb_sdioLike/ahb_pdma.c
 new file mode 100644
-index 000000000..f4280d9f1
+index 000000000000..f4280d9f1113
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ahb_sdioLike/ahb_pdma.c
 @@ -0,0 +1,486 @@
@@ -174815,7 +174815,7 @@ index 000000000..f4280d9f1
 +/* End of ahb_pdma.c */
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ahb_sdioLike/arm.c b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ahb_sdioLike/arm.c
 new file mode 100644
-index 000000000..6b719028a
+index 000000000000..6b719028ae93
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ahb_sdioLike/arm.c
 @@ -0,0 +1,31 @@
@@ -174852,7 +174852,7 @@ index 000000000..6b719028a
 +*/
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ahb_sdioLike/include/hif.h b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ahb_sdioLike/include/hif.h
 new file mode 100644
-index 000000000..6145a76d0
+index 000000000000..6145a76d0050
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ahb_sdioLike/include/hif.h
 @@ -0,0 +1,407 @@
@@ -175265,7 +175265,7 @@ index 000000000..6145a76d0
 +#endif /* _HIF_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ahb_sdioLike/include/hif_pdma.h b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ahb_sdioLike/include/hif_pdma.h
 new file mode 100644
-index 000000000..7b37eedab
+index 000000000000..7b37eedabe49
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ahb_sdioLike/include/hif_pdma.h
 @@ -0,0 +1,142 @@
@@ -175413,7 +175413,7 @@ index 000000000..7b37eedab
 +/* End of hif_gdma.h */
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ahb_sdioLike/include/mtk_porting.h b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ahb_sdioLike/include/mtk_porting.h
 new file mode 100644
-index 000000000..94ae8e659
+index 000000000000..94ae8e659a88
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ahb_sdioLike/include/mtk_porting.h
 @@ -0,0 +1,89 @@
@@ -175508,7 +175508,7 @@ index 000000000..94ae8e659
 +#endif /* _MTK_PORTING_H_ */
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ahb_sdioLike/include/sdio.h b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ahb_sdioLike/include/sdio.h
 new file mode 100644
-index 000000000..2ad92249e
+index 000000000000..2ad92249e1d1
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ahb_sdioLike/include/sdio.h
 @@ -0,0 +1,298 @@
@@ -175812,7 +175812,7 @@ index 000000000..2ad92249e
 +
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ahb_sdioLike/sdio_bus_driver.c b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ahb_sdioLike/sdio_bus_driver.c
 new file mode 100644
-index 000000000..d575bf417
+index 000000000000..d575bf417970
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ahb_sdioLike/sdio_bus_driver.c
 @@ -0,0 +1,460 @@
@@ -176278,7 +176278,7 @@ index 000000000..d575bf417
 +
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ehpi/arm.c b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ehpi/arm.c
 new file mode 100644
-index 000000000..9fcc455c9
+index 000000000000..9fcc455c92c9
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ehpi/arm.c
 @@ -0,0 +1,539 @@
@@ -176823,7 +176823,7 @@ index 000000000..9fcc455c9
 +}
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ehpi/colibri.c b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ehpi/colibri.c
 new file mode 100644
-index 000000000..c90b4673b
+index 000000000000..c90b4673ba38
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ehpi/colibri.c
 @@ -0,0 +1,535 @@
@@ -177364,7 +177364,7 @@ index 000000000..c90b4673b
 +}
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ehpi/ehpi.c b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ehpi/ehpi.c
 new file mode 100644
-index 000000000..b23f39670
+index 000000000000..b23f39670fcd
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ehpi/ehpi.c
 @@ -0,0 +1,385 @@
@@ -177755,7 +177755,7 @@ index 000000000..b23f39670
 +}
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ehpi/include/colibri.h b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ehpi/include/colibri.h
 new file mode 100644
-index 000000000..0fa4ae811
+index 000000000000..0fa4ae81183d
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ehpi/include/colibri.h
 @@ -0,0 +1,169 @@
@@ -177930,7 +177930,7 @@ index 000000000..0fa4ae811
 +#endif /* _COLIBRI_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ehpi/include/hif.h b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ehpi/include/hif.h
 new file mode 100644
-index 000000000..9f5d73ac3
+index 000000000000..9f5d73ac392e
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/ehpi/include/hif.h
 @@ -0,0 +1,106 @@
@@ -178042,7 +178042,7 @@ index 000000000..9f5d73ac3
 +#endif /* _HIF_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/hif/sdio/arm.c b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/sdio/arm.c
 new file mode 100644
-index 000000000..bfa77dd2d
+index 000000000000..bfa77dd2d9ed
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/sdio/arm.c
 @@ -0,0 +1,36 @@
@@ -178084,7 +178084,7 @@ index 000000000..bfa77dd2d
 +*/
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/hif/sdio/include/hif.h b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/sdio/include/hif.h
 new file mode 100644
-index 000000000..94784d7aa
+index 000000000000..94784d7aa3ad
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/sdio/include/hif.h
 @@ -0,0 +1,193 @@
@@ -178283,7 +178283,7 @@ index 000000000..94784d7aa
 +#endif /* _HIF_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/hif/sdio/include/hif_sdio.h b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/sdio/include/hif_sdio.h
 new file mode 100644
-index 000000000..752875e6b
+index 000000000000..752875e6b0ae
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/sdio/include/hif_sdio.h
 @@ -0,0 +1,242 @@
@@ -178531,7 +178531,7 @@ index 000000000..752875e6b
 +#endif /* _HIF_SDIO_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/hif/sdio/include/mtk_porting.h b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/sdio/include/mtk_porting.h
 new file mode 100644
-index 000000000..3401fcb3f
+index 000000000000..3401fcb3fe97
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/sdio/include/mtk_porting.h
 @@ -0,0 +1,41 @@
@@ -178578,7 +178578,7 @@ index 000000000..3401fcb3f
 +#endif /* _MTK_PORTING_H_ */
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/hif/sdio/sdio.c b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/sdio/sdio.c
 new file mode 100644
-index 000000000..8d10bd6cc
+index 000000000000..8d10bd6cc85f
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/sdio/sdio.c
 @@ -0,0 +1,1221 @@
@@ -179805,7 +179805,7 @@ index 000000000..8d10bd6cc
 +}
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/hif/sdio/x86.c b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/sdio/x86.c
 new file mode 100644
-index 000000000..bfa77dd2d
+index 000000000000..bfa77dd2d9ed
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/hif/sdio/x86.c
 @@ -0,0 +1,36 @@
@@ -179847,7 +179847,7 @@ index 000000000..bfa77dd2d
 +*/
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_cfg80211.h b/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_cfg80211.h
 new file mode 100644
-index 000000000..9ecede689
+index 000000000000..9ecede689575
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_cfg80211.h
 @@ -0,0 +1,349 @@
@@ -180202,7 +180202,7 @@ index 000000000..9ecede689
 +#endif /* _GL_CFG80211_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_kal.h b/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_kal.h
 new file mode 100644
-index 000000000..c24d7fd28
+index 000000000000..c24d7fd286ed
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_kal.h
 @@ -0,0 +1,1660 @@
@@ -181868,7 +181868,7 @@ index 000000000..c24d7fd28
 +#endif /* _GL_KAL_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_os.h b/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_os.h
 new file mode 100644
-index 000000000..e52fe1469
+index 000000000000..e52fe1469eac
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_os.h
 @@ -0,0 +1,1340 @@
@@ -183214,7 +183214,7 @@ index 000000000..e52fe1469
 +#endif /* _GL_OS_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_p2p_ioctl.h b/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_p2p_ioctl.h
 new file mode 100644
-index 000000000..1b68dfd5f
+index 000000000000..1b68dfd5f020
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_p2p_ioctl.h
 @@ -0,0 +1,797 @@
@@ -184017,7 +184017,7 @@ index 000000000..1b68dfd5f
 +#endif /* _GL_P2P_IOCTL_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_p2p_kal.h b/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_p2p_kal.h
 new file mode 100644
-index 000000000..35b1d04a2
+index 000000000000..35b1d04a21ad
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_p2p_kal.h
 @@ -0,0 +1,266 @@
@@ -184289,7 +184289,7 @@ index 000000000..35b1d04a2
 +#endif /* _GL_P2P_KAL_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_p2p_os.h b/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_p2p_os.h
 new file mode 100644
-index 000000000..34d56220d
+index 000000000000..34d56220d56a
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_p2p_os.h
 @@ -0,0 +1,261 @@
@@ -184556,7 +184556,7 @@ index 000000000..34d56220d
 +#endif
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_rst.h b/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_rst.h
 new file mode 100644
-index 000000000..d2a884e05
+index 000000000000..d2a884e058bf
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_rst.h
 @@ -0,0 +1,164 @@
@@ -184726,7 +184726,7 @@ index 000000000..d2a884e05
 +#endif /* _GL_RST_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_sec.h b/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_sec.h
 new file mode 100644
-index 000000000..3cc57780f
+index 000000000000..3cc57780f201
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_sec.h
 @@ -0,0 +1,21 @@
@@ -184753,7 +184753,7 @@ index 000000000..3cc57780f
 +#endif /* _GL_SEC_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_typedef.h b/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_typedef.h
 new file mode 100644
-index 000000000..adf581b07
+index 000000000000..adf581b0759e
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_typedef.h
 @@ -0,0 +1,275 @@
@@ -185034,7 +185034,7 @@ index 000000000..adf581b07
 +#endif /* _GL_TYPEDEF_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_vendor.h b/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_vendor.h
 new file mode 100644
-index 000000000..51df48cce
+index 000000000000..51df48ccef22
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_vendor.h
 @@ -0,0 +1,621 @@
@@ -185661,7 +185661,7 @@ index 000000000..51df48cce
 +#endif /* _GL_VENDOR_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_wext.h b/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_wext.h
 new file mode 100644
-index 000000000..d25c78b3c
+index 000000000000..d25c78b3cad5
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_wext.h
 @@ -0,0 +1,377 @@
@@ -186044,7 +186044,7 @@ index 000000000..d25c78b3c
 +#endif /* _GL_WEXT_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_wext_priv.h b/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_wext_priv.h
 new file mode 100644
-index 000000000..43165e69e
+index 000000000000..43165e69e849
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/include/gl_wext_priv.h
 @@ -0,0 +1,379 @@
@@ -186429,7 +186429,7 @@ index 000000000..43165e69e
 +#endif /* _GL_WEXT_PRIV_H */
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/plat/mt6797/plat_priv.c b/drivers/net/wireless/mediatek/mt6797/os/linux/plat/mt6797/plat_priv.c
 new file mode 100644
-index 000000000..14e4a1eb5
+index 000000000000..14e4a1eb5680
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/plat/mt6797/plat_priv.c
 @@ -0,0 +1,86 @@
@@ -186521,7 +186521,7 @@ index 000000000..14e4a1eb5
 +}
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/linux/platform.c b/drivers/net/wireless/mediatek/mt6797/os/linux/platform.c
 new file mode 100644
-index 000000000..34a3c306f
+index 000000000000..34a3c306f98c
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/linux/platform.c
 @@ -0,0 +1,431 @@
@@ -186958,7 +186958,7 @@ index 000000000..34a3c306f
 +}
 diff --git a/drivers/net/wireless/mediatek/mt6797/os/version.h b/drivers/net/wireless/mediatek/mt6797/os/version.h
 new file mode 100644
-index 000000000..63b1e9032
+index 000000000000..63b1e9032c81
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt6797/os/version.h
 @@ -0,0 +1,202 @@
@@ -187164,3 +187164,6 @@ index 000000000..63b1e9032
 +*/
 +
 +#endif /* _VERSION_H */
+-- 
+2.53.0
+

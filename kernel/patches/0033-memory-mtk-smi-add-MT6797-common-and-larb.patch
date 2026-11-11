@@ -1,0 +1,63 @@
+From 5cab34288cf71b01bd371661c174c4d59936af84 Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Mon, 2 Nov 2026 01:16:51 +0100
+Subject: [PATCH 33/51] memory: mtk-smi: add MT6797 common and larb
+
+Gen2 common. The larbs are left at their reset (physical address) port
+setup, since there is no M4U driver for this SoC.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/memory/mtk-smi.c | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/drivers/memory/mtk-smi.c b/drivers/memory/mtk-smi.c
+index aaeba8ab211e..6d56f83e0c1e 100644
+--- a/drivers/memory/mtk-smi.c
++++ b/drivers/memory/mtk-smi.c
+@@ -236,6 +236,15 @@ static int mtk_smi_larb_config_port_mt8173(struct device *dev)
+ 	return 0;
+ }
+ 
++/*
++ * MT6797: the display reads through the larbs with physical addresses (no M4U driver yet), which is the
++ * reset state, so there is nothing to program.
++ */
++static int mtk_smi_larb_config_port_none(struct device *dev)
++{
++	return 0;
++}
++
+ static int mtk_smi_larb_config_port_gen2_general(struct device *dev)
+ {
+ 	struct mtk_smi_larb *larb = dev_get_drvdata(dev);
+@@ -509,6 +518,10 @@ static const struct mtk_smi_larb_gen mtk_smi_larb_mt8167 = {
+ 	.config_port = mtk_smi_larb_config_port_mt8167,
+ };
+ 
++static const struct mtk_smi_larb_gen mtk_smi_larb_mt6797 = {
++	.config_port = mtk_smi_larb_config_port_none,
++};
++
+ static const struct mtk_smi_larb_gen mtk_smi_larb_mt8173 = {
+ 	/* mt8173 do not need the port in larb */
+ 	.config_port = mtk_smi_larb_config_port_mt8173,
+@@ -550,6 +563,7 @@ static const struct of_device_id mtk_smi_larb_of_ids[] = {
+ 	{.compatible = "mediatek,mt2712-smi-larb", .data = &mtk_smi_larb_mt2712},
+ 	{.compatible = "mediatek,mt6779-smi-larb", .data = &mtk_smi_larb_mt6779},
+ 	{.compatible = "mediatek,mt6795-smi-larb", .data = &mtk_smi_larb_mt8173},
++	{.compatible = "mediatek,mt6797-smi-larb", .data = &mtk_smi_larb_mt6797},
+ 	{.compatible = "mediatek,mt6893-smi-larb", .data = &mtk_smi_larb_mt6893},
+ 	{.compatible = "mediatek,mt8167-smi-larb", .data = &mtk_smi_larb_mt8167},
+ 	{.compatible = "mediatek,mt8173-smi-larb", .data = &mtk_smi_larb_mt8173},
+@@ -845,6 +859,7 @@ static const struct of_device_id mtk_smi_common_of_ids[] = {
+ 	{.compatible = "mediatek,mt2712-smi-common", .data = &mtk_smi_common_gen2},
+ 	{.compatible = "mediatek,mt6779-smi-common", .data = &mtk_smi_common_mt6779},
+ 	{.compatible = "mediatek,mt6795-smi-common", .data = &mtk_smi_common_mt6795},
++	{.compatible = "mediatek,mt6797-smi-common", .data = &mtk_smi_common_gen2},
+ 	{.compatible = "mediatek,mt6893-smi-common", .data = &mtk_smi_common_mt6893},
+ 	{.compatible = "mediatek,mt8167-smi-common", .data = &mtk_smi_common_gen2},
+ 	{.compatible = "mediatek,mt8173-smi-common", .data = &mtk_smi_common_gen2},
+-- 
+2.53.0
+

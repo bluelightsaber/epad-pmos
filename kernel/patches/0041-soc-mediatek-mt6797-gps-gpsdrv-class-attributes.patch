@@ -1,0 +1,175 @@
+From 79716ec99bb28952f0a8bd168644994729191a99 Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Tue, 3 Nov 2026 01:44:49 +0100
+Subject: [PATCH 41/51] soc: mediatek: mt6797-gps: gpsdrv class attributes
+
+The vendor GPS daemon (mnld) writes its state to
+/sys/class/gpsdrv/gps/{pwrctl,suspend,status,state,pwrsave,rdelay} and
+gives up if they are missing. Provide them; they only store what is
+written.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/soc/mediatek/mt6797-gps.c | 99 +++++++++++++++++++++++++++++++
+ 1 file changed, 99 insertions(+)
+
+diff --git a/drivers/soc/mediatek/mt6797-gps.c b/drivers/soc/mediatek/mt6797-gps.c
+index 802005d9e253..9e8beefcf11a 100644
+--- a/drivers/soc/mediatek/mt6797-gps.c
++++ b/drivers/soc/mediatek/mt6797-gps.c
+@@ -10,6 +10,9 @@
+  *                6/7/8/10/11 as in the vendor stp_chrdev_gps driver.
+  *   /dev/gps     the vendor "mt3326-gps" mailbox: the last write() is
+  *                returned to readers.  On ConSys it has no hardware behind it.
++ *   /sys/class/gpsdrv/gps/{pwrctl,suspend,status,state,pwrsave,rdelay}
++ *                the vendor driver's attributes; the daemon writes its state
++ *                there.  They only store what is written.
+  *
+  * The data on the GPS channel is MediaTek's binary baseband protocol; turning
+  * it into positions is the job of the daemon, not of this driver.
+@@ -35,6 +38,9 @@
+ #define GPS_RX_FIFO_SIZE	SZ_64K
+ #define GPS_TX_MAX		2048	/* WMT client send limit */
+ #define GPS_MAILBOX_SIZE	4096
++#define GPS_ATTR_SIZE		64
++
++enum { GPS_PWRCTL, GPS_SUSPEND, GPS_STATUS, GPS_STATE, GPS_PWRSAVE, GPS_RDELAY, GPS_NATTR };
+ 
+ /* Vendor ioctl numbers (plain integers, not _IO()). */
+ #define COMBO_IOC_GPS_HWVER		6
+@@ -68,6 +74,14 @@ struct mt6797_gps {
+ 	size_t mbox_len, mbox_pos;
+ 	u8 mbox[GPS_MAILBOX_SIZE];
+ 	struct miscdevice gps;
++
++	struct device *drv;		/* /sys/class/gpsdrv/gps */
++	struct mutex attr_lock;
++	char attr[GPS_NATTR][GPS_ATTR_SIZE];
++};
++
++static const struct class gpsdrv_class = {
++	.name = "gpsdrv",
+ };
+ 
+ static void mt6797_gps_receive(void *context, const u8 *data, size_t length)
+@@ -311,6 +325,69 @@ static const struct file_operations gpsmbox_fops = {
+ 	.compat_ioctl = gpsmbox_ioctl,
+ };
+ 
++/* /sys/class/gpsdrv/gps: same names as the vendor driver, values kept as written */
++
++static const char * const gps_attr_names[GPS_NATTR] = {
++	"pwrctl", "suspend", "status", "state", "pwrsave", "rdelay",
++};
++
++static int gps_attr_index(struct device_attribute *attr)
++{
++	int i;
++
++	for (i = 0; i < GPS_NATTR; i++)
++		if (!strcmp(attr->attr.name, gps_attr_names[i]))
++			return i;
++	return -1;
++}
++
++static ssize_t gps_attr_show(struct device *d, struct device_attribute *attr, char *buf)
++{
++	struct mt6797_gps *gps = dev_get_drvdata(d);
++	int i = gps_attr_index(attr);
++	ssize_t n;
++
++	if (i < 0)
++		return -EINVAL;
++	mutex_lock(&gps->attr_lock);
++	n = sysfs_emit(buf, "%s\n", gps->attr[i]);
++	mutex_unlock(&gps->attr_lock);
++	return n;
++}
++
++static ssize_t gps_attr_store(struct device *d, struct device_attribute *attr,
++			      const char *buf, size_t count)
++{
++	struct mt6797_gps *gps = dev_get_drvdata(d);
++	int i = gps_attr_index(attr);
++
++	if (i < 0)
++		return -EINVAL;
++	mutex_lock(&gps->attr_lock);
++	strscpy(gps->attr[i], buf, min_t(size_t, count + 1, GPS_ATTR_SIZE));
++	strim(gps->attr[i]);
++	mutex_unlock(&gps->attr_lock);
++	return count;
++}
++
++static DEVICE_ATTR(pwrctl, 0664, gps_attr_show, gps_attr_store);
++static DEVICE_ATTR(suspend, 0664, gps_attr_show, gps_attr_store);
++static DEVICE_ATTR(status, 0664, gps_attr_show, gps_attr_store);
++static DEVICE_ATTR(state, 0664, gps_attr_show, gps_attr_store);
++static DEVICE_ATTR(pwrsave, 0664, gps_attr_show, gps_attr_store);
++static DEVICE_ATTR(rdelay, 0664, gps_attr_show, gps_attr_store);
++
++static struct attribute *gpsdrv_attrs[] = {
++	&dev_attr_pwrctl.attr,
++	&dev_attr_suspend.attr,
++	&dev_attr_status.attr,
++	&dev_attr_state.attr,
++	&dev_attr_pwrsave.attr,
++	&dev_attr_rdelay.attr,
++	NULL,
++};
++ATTRIBUTE_GROUPS(gpsdrv);
++
+ static int mt6797_gps_probe(struct platform_device *pdev)
+ {
+ 	struct device *dev = &pdev->dev;
+@@ -324,6 +401,12 @@ static int mt6797_gps_probe(struct platform_device *pdev)
+ 	mutex_init(&gps->lock);
+ 	mutex_init(&gps->tx_lock);
+ 	mutex_init(&gps->mbox_lock);
++	mutex_init(&gps->attr_lock);
++	strscpy(gps->attr[GPS_PWRCTL], "0", GPS_ATTR_SIZE);
++	strscpy(gps->attr[GPS_SUSPEND], "0", GPS_ATTR_SIZE);
++	strscpy(gps->attr[GPS_STATE], "0", GPS_ATTR_SIZE);
++	strscpy(gps->attr[GPS_PWRSAVE], "0", GPS_ATTR_SIZE);
++	strscpy(gps->attr[GPS_RDELAY], "50", GPS_ATTR_SIZE);
+ 	spin_lock_init(&gps->rx_lock);
+ 	init_waitqueue_head(&gps->rx_wait);
+ 	init_waitqueue_head(&gps->mbox_wait);
+@@ -365,11 +448,25 @@ static int mt6797_gps_probe(struct platform_device *pdev)
+ 	if (ret)
+ 		goto err_stpgps;
+ 
++	ret = class_register(&gpsdrv_class);
++	if (ret)
++		goto err_gps;
++	gps->drv = device_create_with_groups(&gpsdrv_class, dev, MKDEV(0, 0), gps,
++					     gpsdrv_groups, "gps");
++	if (IS_ERR(gps->drv)) {
++		ret = PTR_ERR(gps->drv);
++		goto err_class;
++	}
++
+ 	platform_set_drvdata(pdev, gps);
+ 	dev_info(dev, "MT6797 GPS ready (/dev/stpgps, LNA %s)\n",
+ 		 gps->lna ? "GPIO" : "none");
+ 	return 0;
+ 
++err_class:
++	class_unregister(&gpsdrv_class);
++err_gps:
++	misc_deregister(&gps->gps);
+ err_stpgps:
+ 	misc_deregister(&gps->stpgps);
+ err_ws:
+@@ -385,6 +482,8 @@ static void mt6797_gps_remove(struct platform_device *pdev)
+ {
+ 	struct mt6797_gps *gps = platform_get_drvdata(pdev);
+ 
++	device_unregister(gps->drv);
++	class_unregister(&gpsdrv_class);
+ 	misc_deregister(&gps->gps);
+ 	misc_deregister(&gps->stpgps);
+ 	mt6797_wmt_client_close(gps->client);
+-- 
+2.53.0
+

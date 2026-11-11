@@ -1,0 +1,555 @@
+From 1d3082a8272621de3a1db989158881b4790510d4 Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Tue, 3 Nov 2026 01:17:19 +0100
+Subject: [PATCH 40/51] soc: mediatek: mt6797: GPS character devices on ConSys
+
+Add /dev/stpgps (raw STP task 2, WMT GPS function on open, optional LNA
+GPIO) and the /dev/gps mailbox expected by the MediaTek location daemon.
+WMT clients may now claim the GPS task; ConSys has no VCN33 rail for it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/soc/mediatek/Kconfig         |   8 +
+ drivers/soc/mediatek/Makefile        |   1 +
+ drivers/soc/mediatek/mt6797-consys.c |   8 +
+ drivers/soc/mediatek/mt6797-gps.c    | 415 +++++++++++++++++++++++++++
+ drivers/soc/mediatek/mt6797-wmt.c    |  10 +-
+ include/linux/mt6797-consys.h        |   1 +
+ 6 files changed, 439 insertions(+), 4 deletions(-)
+ create mode 100644 drivers/soc/mediatek/mt6797-gps.c
+
+diff --git a/drivers/soc/mediatek/Kconfig b/drivers/soc/mediatek/Kconfig
+index e1e052a4c855..7bfd9e05d91b 100644
+--- a/drivers/soc/mediatek/Kconfig
++++ b/drivers/soc/mediatek/Kconfig
+@@ -140,6 +140,14 @@ config MTK_MT6797_STP_SESSION
+ 	  of the MT6797 BTIF transport.  It claims BTIF only when explicitly
+ 	  started by a higher-level ConSys owner and does not power the chip.
+ 
++config MTK_MT6797_GPS
++	tristate "MT6797 ConSys GPS character devices"
++	depends on MTK_MT6797_WMT
++	help
++	  /dev/stpgps (raw GPS channel of the ConSys baseband over STP/WMT) and
++	  /dev/gps, as expected by the MediaTek location daemon.  The channel
++	  carries MediaTek's binary GPS protocol, not NMEA.
++
+ config MTK_MT6797_WMT_INIT
+ 	tristate "MT6797 WMT firmware initialization"
+ 	depends on MTK_MT6797_CONSYS && MTK_MT6797_STP_SESSION
+diff --git a/drivers/soc/mediatek/Makefile b/drivers/soc/mediatek/Makefile
+index 5c0a2f4e5ff8..22651d495b4a 100644
+--- a/drivers/soc/mediatek/Makefile
++++ b/drivers/soc/mediatek/Makefile
+@@ -16,6 +16,7 @@ obj-$(CONFIG_MTK_MT6797_STP) += mt6797-stp.o
+ obj-$(CONFIG_MTK_MT6797_STP_SESSION) += mt6797-stp-session.o
+ obj-$(CONFIG_MTK_MT6797_WMT_INIT) += mt6797-wmt-init.o
+ obj-$(CONFIG_MTK_MT6797_WMT) += mt6797-wmt.o
++obj-$(CONFIG_MTK_MT6797_GPS) += mt6797-gps.o
+ obj-$(CONFIG_MTK_MT6797_STP_DIAG) += mt6797-stp-diag.o
+ obj-$(CONFIG_MTK_MT6797_WLAN_HIF) += mt6797-wlan-hif.o
+ obj-$(CONFIG_MTK_MT6351_IRQ) += mt6351-irq.o
+diff --git a/drivers/soc/mediatek/mt6797-consys.c b/drivers/soc/mediatek/mt6797-consys.c
+index b9cef05a30f1..8864e32d9232 100644
+--- a/drivers/soc/mediatek/mt6797-consys.c
++++ b/drivers/soc/mediatek/mt6797-consys.c
+@@ -115,6 +115,7 @@ struct mt6797_consys {
+ 	bool stp_enabled;
+ 	bool bt_radio_on;
+ 	bool wifi_radio_on;
++	bool gps_radio_on;
+ 	phys_addr_t emi_base;
+ 	phys_addr_t emi_size;
+ 	void __iomem *emi_io;
+@@ -574,6 +575,11 @@ int mt6797_consys_radio_power(void *context, u8 function, bool enabled,
+ 		supply = cs->vcn33_wifi;
+ 		state = &cs->wifi_radio_on;
+ 		break;
++	case MT6797_CONSYS_FUNC_GPS:
++		/* GPS runs from VCN18/VCN28 (already on with ConSys); no VCN33 */
++		supply = NULL;
++		state = &cs->gps_radio_on;
++		break;
+ 	default:
+ 		return -EINVAL;
+ 	}
+@@ -585,6 +591,8 @@ int mt6797_consys_radio_power(void *context, u8 function, bool enabled,
+ 		ret = -EPERM;
+ 	else if (*state == enabled)
+ 		ret = 0;
++	else if (!supply)
++		ret = 0;
+ 	else if (enabled)
+ 		ret = regulator_enable(supply);
+ 	else
+diff --git a/drivers/soc/mediatek/mt6797-gps.c b/drivers/soc/mediatek/mt6797-gps.c
+new file mode 100644
+index 000000000000..802005d9e253
+--- /dev/null
++++ b/drivers/soc/mediatek/mt6797-gps.c
+@@ -0,0 +1,415 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * MT6797 ConSys GPS: the vendor character devices on top of the WMT/STP
++ * client API, so the MediaTek location daemon (mnld) can drive the GPS
++ * baseband.
++ *
++ *   /dev/stpgps  raw GPS channel (STP task 2).  open() switches the WMT GPS
++ *                function and the external LNA on, release() switches them
++ *                off.  read() blocks until the baseband sends data.  ioctls
++ *                6/7/8/10/11 as in the vendor stp_chrdev_gps driver.
++ *   /dev/gps     the vendor "mt3326-gps" mailbox: the last write() is
++ *                returned to readers.  On ConSys it has no hardware behind it.
++ *
++ * The data on the GPS channel is MediaTek's binary baseband protocol; turning
++ * it into positions is the job of the daemon, not of this driver.
++ */
++
++#include <linux/gpio/consumer.h>
++#include <linux/kfifo.h>
++#include <linux/miscdevice.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/pm_wakeup.h>
++#include <linux/poll.h>
++#include <linux/slab.h>
++#include <linux/spinlock.h>
++#include <linux/uaccess.h>
++#include <linux/wait.h>
++
++#include <linux/mt6797-stp-session.h>
++#include <linux/mt6797-wmt.h>
++
++#define GPS_RX_FIFO_SIZE	SZ_64K
++#define GPS_TX_MAX		2048	/* WMT client send limit */
++#define GPS_MAILBOX_SIZE	4096
++
++/* Vendor ioctl numbers (plain integers, not _IO()). */
++#define COMBO_IOC_GPS_HWVER		6
++#define COMBO_IOC_GPS_IC_HW_VERSION	7
++#define COMBO_IOC_GPS_IC_FW_VERSION	8
++#define COMBO_IOC_RTC_FLAG		10
++#define COMBO_IOC_CO_CLOCK_FLAG		11
++
++struct mt6797_gps {
++	struct device *dev;
++	struct mt6797_wmt_client *client;
++	struct gpio_desc *lna;
++	struct wakeup_source *ws;
++
++	struct mutex lock;		/* open state, client open/close */
++	bool opened;
++
++	spinlock_t rx_lock;
++	DECLARE_KFIFO_PTR(rx, u8);
++	wait_queue_head_t rx_wait;
++	unsigned long rx_dropped;
++
++	struct mutex tx_lock;
++	u8 tx[GPS_TX_MAX];
++
++	struct miscdevice stpgps;
++
++	/* /dev/gps mailbox */
++	struct mutex mbox_lock;
++	wait_queue_head_t mbox_wait;
++	size_t mbox_len, mbox_pos;
++	u8 mbox[GPS_MAILBOX_SIZE];
++	struct miscdevice gps;
++};
++
++static void mt6797_gps_receive(void *context, const u8 *data, size_t length)
++{
++	struct mt6797_gps *gps = context;
++	unsigned long flags;
++	unsigned int n;
++
++	spin_lock_irqsave(&gps->rx_lock, flags);
++	n = kfifo_in(&gps->rx, data, length);
++	if (n < length)
++		gps->rx_dropped += length - n;
++	spin_unlock_irqrestore(&gps->rx_lock, flags);
++	wake_up_interruptible(&gps->rx_wait);
++}
++
++static const struct mt6797_wmt_client_ops mt6797_gps_ops = {
++	.receive = mt6797_gps_receive,
++};
++
++static int stpgps_open(struct inode *inode, struct file *file)
++{
++	struct mt6797_gps *gps = container_of(file->private_data,
++					      struct mt6797_gps, stpgps);
++	int ret;
++
++	mutex_lock(&gps->lock);
++	if (gps->opened) {
++		ret = -EBUSY;
++		goto out;
++	}
++	kfifo_reset(&gps->rx);
++	gps->rx_dropped = 0;
++	if (gps->lna)
++		gpiod_set_value_cansleep(gps->lna, 1);
++	ret = mt6797_wmt_client_open(gps->client);
++	if (ret) {
++		if (gps->lna)
++			gpiod_set_value_cansleep(gps->lna, 0);
++		dev_err(gps->dev, "GPS function on failed: %d\n", ret);
++		goto out;
++	}
++	/* as the vendor driver: no suspend while the daemon has the GPS open */
++	__pm_stay_awake(gps->ws);
++	gps->opened = true;
++	file->private_data = gps;
++	dev_info(gps->dev, "GPS on\n");
++out:
++	mutex_unlock(&gps->lock);
++	return ret ? ret : nonseekable_open(inode, file);
++}
++
++static int stpgps_release(struct inode *inode, struct file *file)
++{
++	struct mt6797_gps *gps = file->private_data;
++	int ret;
++
++	mutex_lock(&gps->lock);
++	ret = mt6797_wmt_client_close(gps->client);
++	if (gps->lna)
++		gpiod_set_value_cansleep(gps->lna, 0);
++	gps->opened = false;
++	__pm_relax(gps->ws);
++	mutex_unlock(&gps->lock);
++	dev_info(gps->dev, "GPS off (%d), %lu bytes dropped\n", ret, gps->rx_dropped);
++	return 0;
++}
++
++static ssize_t stpgps_read(struct file *file, char __user *buf, size_t count,
++			   loff_t *ppos)
++{
++	struct mt6797_gps *gps = file->private_data;
++	unsigned int copied;
++	int ret;
++
++	if (!count)
++		return 0;
++	for (;;) {
++		/* single reader: kfifo_to_user is safe against the RX producer */
++		ret = kfifo_to_user(&gps->rx, buf, count, &copied);
++		if (ret)
++			return ret;
++		if (copied)
++			return copied;
++		if (file->f_flags & O_NONBLOCK)
++			return -EAGAIN;
++		ret = wait_event_interruptible(gps->rx_wait, !kfifo_is_empty(&gps->rx));
++		if (ret)
++			return ret;
++	}
++}
++
++static ssize_t stpgps_write(struct file *file, const char __user *buf,
++			    size_t count, loff_t *ppos)
++{
++	struct mt6797_gps *gps = file->private_data;
++	int ret;
++
++	if (!count)
++		return 0;
++	count = min_t(size_t, count, GPS_TX_MAX);
++	mutex_lock(&gps->tx_lock);
++	if (copy_from_user(gps->tx, buf, count))
++		ret = -EFAULT;
++	else
++		ret = mt6797_wmt_client_send(gps->client, gps->tx, count);
++	mutex_unlock(&gps->tx_lock);
++	return ret < 0 ? ret : count;
++}
++
++static __poll_t stpgps_poll(struct file *file, poll_table *wait)
++{
++	struct mt6797_gps *gps = file->private_data;
++	__poll_t mask = EPOLLOUT | EPOLLWRNORM;
++
++	poll_wait(file, &gps->rx_wait, wait);
++	if (!kfifo_is_empty(&gps->rx))
++		mask |= EPOLLIN | EPOLLRDNORM;
++	return mask;
++}
++
++static long stpgps_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
++{
++	struct mt6797_gps *gps = file->private_data;
++	u32 hw, fw, val;
++	int ret;
++
++	switch (cmd) {
++	case COMBO_IOC_GPS_HWVER:
++		/* the vendor WMT hardware-version enum; MT6797 is its first entry */
++		val = 0;
++		return copy_to_user((u32 __user *)arg, &val, sizeof(val)) ? -EFAULT : 0;
++	case COMBO_IOC_GPS_IC_HW_VERSION:
++	case COMBO_IOC_GPS_IC_FW_VERSION:
++		ret = mt6797_wmt_client_version(gps->client, &hw, &fw);
++		if (ret)
++			return ret;
++		val = cmd == COMBO_IOC_GPS_IC_HW_VERSION ? hw : fw;
++		return copy_to_user((u32 __user *)arg, &val, sizeof(val)) ? -EFAULT : 0;
++	case COMBO_IOC_RTC_FLAG:	/* RTC lost power: not tracked, say no */
++	case COMBO_IOC_CO_CLOCK_FLAG:	/* the E-PAD has an external TCXO */
++		return 0;
++	default:
++		return -EINVAL;
++	}
++}
++
++static const struct file_operations stpgps_fops = {
++	.owner = THIS_MODULE,
++	.open = stpgps_open,
++	.release = stpgps_release,
++	.read = stpgps_read,
++	.write = stpgps_write,
++	.poll = stpgps_poll,
++	.unlocked_ioctl = stpgps_ioctl,
++	.compat_ioctl = compat_ptr_ioctl,
++};
++
++/* /dev/gps: last message written is what readers get */
++
++static int gpsmbox_open(struct inode *inode, struct file *file)
++{
++	file->private_data = container_of(file->private_data, struct mt6797_gps, gps);
++	return nonseekable_open(inode, file);
++}
++
++static ssize_t gpsmbox_read(struct file *file, char __user *buf, size_t count,
++			    loff_t *ppos)
++{
++	struct mt6797_gps *gps = file->private_data;
++	size_t n;
++	int ret;
++
++	for (;;) {
++		mutex_lock(&gps->mbox_lock);
++		if (gps->mbox_len)
++			break;
++		mutex_unlock(&gps->mbox_lock);
++		if (file->f_flags & O_NONBLOCK)
++			return -EAGAIN;
++		ret = wait_event_interruptible(gps->mbox_wait, READ_ONCE(gps->mbox_len));
++		if (ret)
++			return ret;
++	}
++	n = min(count, gps->mbox_len - gps->mbox_pos);
++	if (copy_to_user(buf, gps->mbox + gps->mbox_pos, n)) {
++		mutex_unlock(&gps->mbox_lock);
++		return -EFAULT;
++	}
++	gps->mbox_pos += n;
++	if (gps->mbox_pos >= gps->mbox_len)
++		gps->mbox_len = gps->mbox_pos = 0;
++	mutex_unlock(&gps->mbox_lock);
++	return n;
++}
++
++static ssize_t gpsmbox_write(struct file *file, const char __user *buf,
++			     size_t count, loff_t *ppos)
++{
++	struct mt6797_gps *gps = file->private_data;
++
++	if (!count)
++		return 0;
++	count = min_t(size_t, count, GPS_MAILBOX_SIZE);
++	mutex_lock(&gps->mbox_lock);
++	if (copy_from_user(gps->mbox, buf, count)) {
++		mutex_unlock(&gps->mbox_lock);
++		return -EFAULT;
++	}
++	gps->mbox_len = count;
++	gps->mbox_pos = 0;
++	mutex_unlock(&gps->mbox_lock);
++	wake_up_interruptible(&gps->mbox_wait);
++	return count;
++}
++
++static __poll_t gpsmbox_poll(struct file *file, poll_table *wait)
++{
++	struct mt6797_gps *gps = file->private_data;
++	__poll_t mask = EPOLLOUT | EPOLLWRNORM;
++
++	poll_wait(file, &gps->mbox_wait, wait);
++	if (READ_ONCE(gps->mbox_len))
++		mask |= EPOLLIN | EPOLLRDNORM;
++	return mask;
++}
++
++static long gpsmbox_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
++{
++	/* the vendor driver accepts no ioctls on /dev/gps either */
++	return -ENOIOCTLCMD;
++}
++
++static const struct file_operations gpsmbox_fops = {
++	.owner = THIS_MODULE,
++	.open = gpsmbox_open,
++	.read = gpsmbox_read,
++	.write = gpsmbox_write,
++	.poll = gpsmbox_poll,
++	.unlocked_ioctl = gpsmbox_ioctl,
++	.compat_ioctl = gpsmbox_ioctl,
++};
++
++static int mt6797_gps_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct mt6797_gps *gps;
++	int ret;
++
++	gps = devm_kzalloc(dev, sizeof(*gps), GFP_KERNEL);
++	if (!gps)
++		return -ENOMEM;
++	gps->dev = dev;
++	mutex_init(&gps->lock);
++	mutex_init(&gps->tx_lock);
++	mutex_init(&gps->mbox_lock);
++	spin_lock_init(&gps->rx_lock);
++	init_waitqueue_head(&gps->rx_wait);
++	init_waitqueue_head(&gps->mbox_wait);
++
++	gps->lna = devm_gpiod_get_optional(dev, "lna", GPIOD_OUT_LOW);
++	if (IS_ERR(gps->lna))
++		return dev_err_probe(dev, PTR_ERR(gps->lna), "LNA GPIO\n");
++
++	ret = kfifo_alloc(&gps->rx, GPS_RX_FIFO_SIZE, GFP_KERNEL);
++	if (ret)
++		return ret;
++
++	gps->client = mt6797_wmt_client_get(dev, MT6797_STP_TASK_GPS,
++					    &mt6797_gps_ops, gps);
++	if (IS_ERR(gps->client)) {
++		ret = dev_err_probe(dev, PTR_ERR(gps->client), "WMT client\n");
++		goto err_fifo;
++	}
++
++	gps->ws = wakeup_source_register(dev, "gpswakelock");
++	if (!gps->ws) {
++		ret = -ENOMEM;
++		goto err_client;
++	}
++
++	gps->stpgps.minor = MISC_DYNAMIC_MINOR;
++	gps->stpgps.name = "stpgps";
++	gps->stpgps.fops = &stpgps_fops;
++	gps->stpgps.parent = dev;
++	ret = misc_register(&gps->stpgps);
++	if (ret)
++		goto err_ws;
++
++	gps->gps.minor = MISC_DYNAMIC_MINOR;
++	gps->gps.name = "gps";
++	gps->gps.fops = &gpsmbox_fops;
++	gps->gps.parent = dev;
++	ret = misc_register(&gps->gps);
++	if (ret)
++		goto err_stpgps;
++
++	platform_set_drvdata(pdev, gps);
++	dev_info(dev, "MT6797 GPS ready (/dev/stpgps, LNA %s)\n",
++		 gps->lna ? "GPIO" : "none");
++	return 0;
++
++err_stpgps:
++	misc_deregister(&gps->stpgps);
++err_ws:
++	wakeup_source_unregister(gps->ws);
++err_client:
++	mt6797_wmt_client_put(gps->client);
++err_fifo:
++	kfifo_free(&gps->rx);
++	return ret;
++}
++
++static void mt6797_gps_remove(struct platform_device *pdev)
++{
++	struct mt6797_gps *gps = platform_get_drvdata(pdev);
++
++	misc_deregister(&gps->gps);
++	misc_deregister(&gps->stpgps);
++	mt6797_wmt_client_close(gps->client);
++	if (gps->lna)
++		gpiod_set_value_cansleep(gps->lna, 0);
++	wakeup_source_unregister(gps->ws);
++	mt6797_wmt_client_put(gps->client);
++	kfifo_free(&gps->rx);
++}
++
++static const struct of_device_id mt6797_gps_of_match[] = {
++	{ .compatible = "mediatek,mt6797-gps" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, mt6797_gps_of_match);
++
++static struct platform_driver mt6797_gps_driver = {
++	.probe = mt6797_gps_probe,
++	.remove = mt6797_gps_remove,
++	.driver = {
++		.name = "mt6797-gps",
++		.of_match_table = mt6797_gps_of_match,
++	},
++};
++module_platform_driver(mt6797_gps_driver);
++
++MODULE_DESCRIPTION("MT6797 ConSys GPS character devices");
++MODULE_LICENSE("GPL");
+diff --git a/drivers/soc/mediatek/mt6797-wmt.c b/drivers/soc/mediatek/mt6797-wmt.c
+index 3074a937372d..1210091adafd 100644
+--- a/drivers/soc/mediatek/mt6797-wmt.c
++++ b/drivers/soc/mediatek/mt6797-wmt.c
+@@ -395,7 +395,8 @@ struct mt6797_wmt_client *mt6797_wmt_client_get(struct device *dev, u8 task,
+ 	struct device *old_radio = NULL;
+ 	int ret;
+ 
+-	if (!dev || (task != MT6797_STP_TASK_BT && task != MT6797_STP_TASK_WIFI))
++	if (!dev || (task != MT6797_STP_TASK_BT && task != MT6797_STP_TASK_GPS &&
++		     task != MT6797_STP_TASK_WIFI))
+ 		return ERR_PTR(-EINVAL);
+ 	node = of_parse_phandle(dev->of_node, "mediatek,wmt", 0);
+ 	if (!node)
+@@ -490,8 +491,8 @@ int mt6797_wmt_client_open(struct mt6797_wmt_client *client)
+ 	ret = mt6797_consys_radio_power(wmt->host, client->task, true, NULL);
+ 	if (ret)
+ 		goto fail;
+-	/* BSP WLAN probe owns its AHB function; only BT uses WMT FUNC_CTRL. */
+-	if (client->task == MT6797_STP_TASK_BT) {
++	/* BSP WLAN probe owns its AHB function; BT and GPS use WMT FUNC_CTRL. */
++	if (client->task == MT6797_STP_TASK_BT || client->task == MT6797_STP_TASK_GPS) {
+ 		ret = mt6797_wmt_function_control(wmt->dev, wmt->session,
+ 						 client->task, true);
+ 		if (ret) {
+@@ -528,7 +529,8 @@ int mt6797_wmt_client_close(struct mt6797_wmt_client *client)
+ 		goto out;
+ 	if (!wmt->recovery_pending)
+ 		ret = mt6797_wmt_psm_wake(wmt);
+-	if (!ret && client->task == MT6797_STP_TASK_BT && !wmt->recovery_pending)
++	if (!ret && (client->task == MT6797_STP_TASK_BT ||
++		     client->task == MT6797_STP_TASK_GPS) && !wmt->recovery_pending)
+ 		ret = mt6797_wmt_function_control(wmt->dev, wmt->session,
+ 						 client->task, false);
+ 	cleanup_ret = mt6797_consys_radio_power(wmt->host, client->task, false, NULL);
+diff --git a/include/linux/mt6797-consys.h b/include/linux/mt6797-consys.h
+index 157fe9831c89..911c238221ed 100644
+--- a/include/linux/mt6797-consys.h
++++ b/include/linux/mt6797-consys.h
+@@ -14,6 +14,7 @@
+ 
+ /* WMT function type values from the MT6797 vendor protocol. */
+ #define MT6797_CONSYS_FUNC_BT		0
++#define MT6797_CONSYS_FUNC_GPS		2
+ #define MT6797_CONSYS_FUNC_WIFI		3
+ 
+ struct mt6797_stp_host_ops;
+-- 
+2.53.0
+

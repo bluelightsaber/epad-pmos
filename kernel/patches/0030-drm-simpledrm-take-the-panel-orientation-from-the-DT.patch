@@ -1,0 +1,49 @@
+From 388aa1a8b7b8fcb94e99c090cc2ba546aa420ee0 Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Sun, 1 Nov 2026 21:26:35 +0100
+Subject: [PATCH 30/51] drm/simpledrm: take the panel orientation from the DT
+ rotation property
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/gpu/drm/sysfb/simpledrm.c | 10 +++++++---
+ 1 file changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/gpu/drm/sysfb/simpledrm.c b/drivers/gpu/drm/sysfb/simpledrm.c
+index e3dd6835977a..cdddcb495d5e 100644
+--- a/drivers/gpu/drm/sysfb/simpledrm.c
++++ b/drivers/gpu/drm/sysfb/simpledrm.c
+@@ -18,6 +18,7 @@
+ #include <drm/drm_atomic.h>
+ #include <drm/drm_atomic_state_helper.h>
+ #include <drm/drm_connector.h>
++#include <drm/drm_panel.h>
+ #include <drm/drm_damage_helper.h>
+ #include <drm/drm_device.h>
+ #include <drm/drm_drv.h>
+@@ -663,6 +664,7 @@ static struct simpledrm_device *simpledrm_device_create(struct drm_driver *drv,
+ 	struct drm_crtc *crtc;
+ 	struct drm_encoder *encoder;
+ 	struct drm_connector *connector;
++	enum drm_panel_orientation orientation;
+ 	unsigned long max_width, max_height;
+ 	size_t nformats;
+ 	int ret;
+@@ -888,9 +890,11 @@ static struct simpledrm_device *simpledrm_device_create(struct drm_driver *drv,
+ 	if (ret)
+ 		return ERR_PTR(ret);
+ 	drm_connector_helper_add(connector, &simpledrm_connector_helper_funcs);
+-	drm_connector_set_panel_orientation_with_quirk(connector,
+-						       DRM_MODE_PANEL_ORIENTATION_UNKNOWN,
+-						       width, height);
++	/* DT "rotation": how the panel is mounted (e.g. a landscape panel used in portrait) */
++	if (!pdev->dev.of_node ||
++	    of_drm_get_panel_orientation(pdev->dev.of_node, &orientation))
++		orientation = DRM_MODE_PANEL_ORIENTATION_UNKNOWN;
++	drm_connector_set_panel_orientation_with_quirk(connector, orientation, width, height);
+ 
+ 	ret = drm_connector_attach_encoder(connector, encoder);
+ 	if (ret)
+-- 
+2.53.0
+

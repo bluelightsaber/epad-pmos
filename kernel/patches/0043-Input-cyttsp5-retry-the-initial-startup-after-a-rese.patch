@@ -1,0 +1,45 @@
+From ce8a9ce7c5b35bbc2c241387c3b1a7fb578c27d0 Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 00:00:01 +0100
+Subject: [PATCH 43/51] Input: cyttsp5: retry the initial startup after a reset
+
+Right after power-up the TT21000 on the E-PAD sometimes answers the HID
+descriptor read with garbage ("Unsupported HID version", -ENODEV) and
+the touchscreen is lost until the driver is rebound by hand. Pulse the
+reset line and retry up to three times before failing the probe.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/input/touchscreen/cyttsp5.c | 16 +++++++++++++++-
+ 1 file changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/input/touchscreen/cyttsp5.c b/drivers/input/touchscreen/cyttsp5.c
+index 41be75739a00..bcf0623aa320 100644
+--- a/drivers/input/touchscreen/cyttsp5.c
++++ b/drivers/input/touchscreen/cyttsp5.c
+@@ -911,7 +911,21 @@ static int cyttsp5_probe(struct device *dev, struct regmap *regmap, int irq,
+ 		return error;
+ 	}
+ 
+-	error = cyttsp5_startup(ts);
++	/*
++	 * Right after power-up the controller may still answer the HID
++	 * descriptor read with garbage (seen on the E-PAD TT21000 at boot):
++	 * reset it and retry a few times before giving up.
++	 */
++	for (i = 0; ; i++) {
++		error = cyttsp5_startup(ts);
++		if (!error || i == 2)
++			break;
++		dev_warn(ts->dev, "startup failed (%d), retrying\n", error);
++		gpiod_set_value_cansleep(ts->reset_gpio, 1);
++		fsleep(10);
++		gpiod_set_value_cansleep(ts->reset_gpio, 0);
++		msleep(200);
++	}
+ 	if (error) {
+ 		dev_err(ts->dev, "Fail initial startup r=%d\n", error);
+ 		return error;
+-- 
+2.53.0
+

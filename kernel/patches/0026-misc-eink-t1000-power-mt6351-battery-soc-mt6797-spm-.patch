@@ -1,0 +1,1337 @@
+From 6209fbcc61ca25b31840155566509f3a4f2a191d Mon Sep 17 00:00:00 2001
+From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
+Date: Sat, 31 Oct 2026 21:49:43 +0100
+Subject: [PATCH 26/51] misc: eink-t1000, power: mt6351-battery, soc:
+ mt6797-spm: updates
+
+Sync with the E-PAD tree (auto refresh API for simpledrm, battery and SPM work).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/misc/eink-t1000.c             | 290 +++++++++++-
+ drivers/power/supply/mt6351-battery.c |  36 ++
+ drivers/soc/mediatek/mt6797-spm.c     | 608 +++++++++++++++++++++++++-
+ 3 files changed, 911 insertions(+), 23 deletions(-)
+
+diff --git a/drivers/misc/eink-t1000.c b/drivers/misc/eink-t1000.c
+index 980bdfeb185d..ee49b759495c 100644
+--- a/drivers/misc/eink-t1000.c
++++ b/drivers/misc/eink-t1000.c
+@@ -20,11 +20,16 @@
+  * OVL (opcional, propiedad mediatek,ovl-base): al cargar se apagan las capas que lk compone encima del
+  * framebuffer (el aviso de bootloader desbloqueado).
+  *
++ * Refresco automático (t1000_request_refresh(), lo llama simpledrm tras cada actualización con daño): agrupa las
++ * peticiones (refresh_delay_ms) y manda la orden de modo con el modo actual; si llegan más mientras pinta, repite
++ * al terminar. Atributo sysfs auto_refresh para desactivarlo (p. ej. una app que gestiona el T1000 ella misma).
++ *
+  * A propósito NO implementa: escribir VCOM (0x42, calibración del panel), el modo 4 (mixed25 cuelga el
+  * T1000), dormir/sueño ligero (requieren manejar el pin de despertar), autorefresco ni actualización de
+  * firmware/waveform.
+  */
+ #include <linux/delay.h>
++#include <linux/eink-t1000.h>
+ #include <linux/fs.h>
+ #include <linux/gpio/consumer.h>
+ #include <linux/i2c.h>
+@@ -34,6 +39,7 @@
+ #include <linux/mutex.h>
+ #include <linux/of.h>
+ #include <linux/uaccess.h>
++#include <linux/workqueue.h>
+ 
+ #define T1000_RESP_REG		0x34
+ 
+@@ -55,17 +61,39 @@
+ struct t1000 {
+ 	struct i2c_client *client;
+ 	struct gpio_desc *hrdy;
++	struct gpio_desc *wakeup;	/* GPIO 234 (gpio_epad_wakeup_en), opcional */
++	bool asleep;
++	int pm_mode;	/* modo antes de suspender, para el refresco al reanudar */
++	bool pm_slept;
+ 	struct mutex lock;
+ 	struct miscdevice misc;
+ 	char version[17];
+ 	char waveform[17];
+ 	unsigned int width, height;
+ 	void __iomem *dsi;
++	void __iomem *mmsys;	/* MMSYS_CONFIG: relojes del pipeline de display de lk */
++	u32 mm_cg[2];
+ 	bool video;
++	unsigned int mode;	/* modo de refresco actual (0, 1 o 2) para el refresco automático */
++	bool auto_refresh;
++	struct delayed_work refresh;
+ };
+ 
++/* Solo hay un T1000; simpledrm lo encuentra por aquí. */
++static struct t1000 *t1000_dev;
++
++static unsigned int refresh_delay_ms = 30;
++module_param(refresh_delay_ms, uint, 0644);
++MODULE_PARM_DESC(refresh_delay_ms, "espera para agrupar actualizaciones antes del refresco automático");
++
+ #define DSI_START		0x00
+ #define DSI_MODE_CTRL		0x14
++#define MMSYS_CG_CON0		0x100
++#define MMSYS_CG_SET0		0x104
++#define MMSYS_CG_CLR0		0x108
++#define MMSYS_CG_CON1		0x110
++#define MMSYS_CG_SET1		0x114
++#define MMSYS_CG_CLR1		0x118
+ #define DSI_MODE_SYNC_PULSE	1
+ 
+ #define OVL_SRC_CON		0x2c
+@@ -90,6 +118,16 @@ static void t1000_dsi_video(struct t1000 *t, bool on)
+ 	t->video = on;
+ }
+ 
++static void t1000_dsi_dump(struct t1000 *t, const char *when)
++{
++	u32 r[16];
++	int i;
++
++	for (i = 0; i < 16; i++)
++		r[i] = readl(t->dsi + i * 4);
++	dev_info(&t->client->dev, "DSI %s: %*ph\n", when, (int)sizeof(r), r);
++}
++
+ static bool t1000_mode_allowed(unsigned int mode)
+ {
+ 	switch (mode) {
+@@ -217,11 +255,107 @@ static int t1000_set_mode(struct t1000 *t, unsigned int mode)
+ 	} else {
+ 		ret = t1000_write(t, cmd, sizeof(cmd));
+ 	}
++	if (!ret && mode <= 0x02)
++		t->mode = mode;
+ out:
+ 	mutex_unlock(&t->lock);
+ 	return ret;
+ }
+ 
++static void t1000_refresh_work(struct work_struct *work)
++{
++	struct t1000 *t = container_of(to_delayed_work(work), struct t1000, refresh);
++	int ret;
++
++	if (t->asleep || !t->auto_refresh)
++		return;
++	ret = t1000_set_mode(t, t->mode);
++	if (ret)
++		dev_dbg(&t->client->dev, "refresco automático: %d\n", ret);
++}
++
++void t1000_request_refresh(void)
++{
++	struct t1000 *t = READ_ONCE(t1000_dev);
++
++	/* si ya hay uno en cola no hace nada; si está pintando, queda en cola para después */
++	if (t && t->auto_refresh)
++		queue_delayed_work(system_unbound_wq, &t->refresh, msecs_to_jiffies(refresh_delay_ms));
++}
++EXPORT_SYMBOL_GPL(t1000_request_refresh);
++
++/*
++ * Sueño del T1000 como Android al apagar la pantalla (traza de fábrica): esperar a que esté libre, GPIO 234 a 0 y
++ * orden 0x61 con modo 0x0f. Despertar: GPIO 234 a 1 y esperar HRDY (~0,75 s).
++ */
++#define T1000_MODE_SLEEP	0x0f
++
++static int t1000_sleep(struct t1000 *t)
++{
++	u8 cmd[] = { 0x10, T1000_CMD_SET_MODE, 0x00, 0x00, 0x00, T1000_MODE_SLEEP, 0x00 };
++	int ret;
++
++	mutex_lock(&t->lock);
++	if (t->asleep) {
++		ret = 0;
++		goto out;
++	}
++	ret = t1000_wait_ready(t, 2000);
++	if (ret)
++		goto out;
++	if (t->wakeup)
++		gpiod_set_value_cansleep(t->wakeup, 0);
++	ret = t1000_write(t, cmd, sizeof(cmd));
++	if (!ret) {
++		unsigned int waited;
++
++		/* HRDY baja cuando ya duerme (~90 ms en la traza de Android) */
++		for (waited = 0; waited < 5000 && gpiod_get_value_cansleep(t->hrdy); waited += 10)
++			usleep_range(10000, 11000);
++		if (waited >= 5000)
++			dev_warn(&t->client->dev, "HRDY no baja tras la orden de dormir\n");
++		else
++			dev_dbg(&t->client->dev, "dormido en %u ms\n", waited);
++		t->asleep = true;
++	}
++out:
++	mutex_unlock(&t->lock);
++	return ret;
++}
++
++static int t1000_wake(struct t1000 *t)
++{
++	int ret = 0, i;
++
++	mutex_lock(&t->lock);
++	if (t->asleep) {
++		/* en Android el vídeo MIPI no se para nunca: al despertar el T1000 no se da por listo sin él */
++		bool video = t->video;
++
++		if (t->dsi && !video)
++			t1000_dsi_video(t, true);
++		/* flanco de subida de wakeup; si no se pone listo, repetirlo */
++		for (i = 0; i < 3; i++) {
++			if (t->wakeup) {
++				gpiod_set_value_cansleep(t->wakeup, 0);
++				usleep_range(1000, 2000);
++				gpiod_set_value_cansleep(t->wakeup, 1);
++			}
++			ret = t1000_wait_ready(t, 2000);
++			if (!ret)
++				break;
++		}
++		if (i)
++			dev_info(&t->client->dev, "despertado al intento %d (%d)\n", i + 1, ret);
++		if (t->dsi && !video)
++			t1000_dsi_video(t, false);
++		if (!ret)
++			t->asleep = false;
++	}
++	mutex_unlock(&t->lock);
++	return ret;
++}
++
+ /* Copia una cadena de la respuesta (bytes por parejas intercambiados) hasta el primer carácter no imprimible. */
+ static void t1000_copy_swapped(char *dst, size_t size, const u8 *src, int len)
+ {
+@@ -382,6 +516,48 @@ static ssize_t video_store(struct device *dev, struct device_attribute *attr, co
+ }
+ static DEVICE_ATTR_RW(video);
+ 
++static ssize_t sleep_show(struct device *dev, struct device_attribute *attr, char *buf)
++{
++	struct t1000 *t = dev_get_drvdata(dev);
++
++	return sysfs_emit(buf, "%d\n", t->asleep);
++}
++
++static ssize_t sleep_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t n)
++{
++	struct t1000 *t = dev_get_drvdata(dev);
++	bool on;
++	int ret;
++
++	if (kstrtobool(buf, &on))
++		return -EINVAL;
++	ret = on ? t1000_sleep(t) : t1000_wake(t);
++	return ret ? ret : n;
++}
++static DEVICE_ATTR_RW(sleep);
++
++static ssize_t auto_refresh_show(struct device *dev, struct device_attribute *attr, char *buf)
++{
++	struct t1000 *t = dev_get_drvdata(dev);
++
++	return sysfs_emit(buf, "%d\n", t->auto_refresh);
++}
++
++static ssize_t auto_refresh_store(struct device *dev, struct device_attribute *attr, const char *buf,
++				  size_t n)
++{
++	struct t1000 *t = dev_get_drvdata(dev);
++	bool on;
++
++	if (kstrtobool(buf, &on))
++		return -EINVAL;
++	WRITE_ONCE(t->auto_refresh, on);
++	if (!on)
++		cancel_delayed_work_sync(&t->refresh);
++	return n;
++}
++static DEVICE_ATTR_RW(auto_refresh);
++
+ static struct attribute *t1000_attrs[] = {
+ 	&dev_attr_video.attr,
+ 	&dev_attr_mode.attr,
+@@ -390,10 +566,20 @@ static struct attribute *t1000_attrs[] = {
+ 	&dev_attr_version.attr,
+ 	&dev_attr_waveform.attr,
+ 	&dev_attr_hrdy.attr,
++	&dev_attr_sleep.attr,
++	&dev_attr_auto_refresh.attr,
+ 	NULL
+ };
+ ATTRIBUTE_GROUPS(t1000);
+ 
++static void t1000_refresh_stop(void *data)
++{
++	struct t1000 *t = data;
++
++	WRITE_ONCE(t1000_dev, NULL);
++	cancel_delayed_work_sync(&t->refresh);
++}
++
+ static void t1000_misc_deregister(void *misc)
+ {
+ 	misc_deregister(misc);
+@@ -416,12 +602,19 @@ static int t1000_probe(struct i2c_client *client)
+ 	t->hrdy = devm_gpiod_get(dev, "hrdy", GPIOD_IN);
+ 	if (IS_ERR(t->hrdy))
+ 		return dev_err_probe(dev, PTR_ERR(t->hrdy), "sin GPIO hrdy\n");
++	t->wakeup = devm_gpiod_get_optional(dev, "wakeup", GPIOD_OUT_HIGH);	/* como Android con pantalla */
++	if (IS_ERR(t->wakeup))
++		return dev_err_probe(dev, PTR_ERR(t->wakeup), "GPIO wakeup\n");
++	/* si estaba dormido, el flanco de subida lo despierta (~0,75 s) */
++	if (t->wakeup && t1000_wait_ready(t, 2000))
++		dev_warn(dev, "HRDY sigue a 0 tras subir wakeup\n");
+ 
+ 	if (!of_property_read_u32(dev->of_node, "mediatek,dsi-base", &dsi_base)) {
+ 		t->dsi = devm_ioremap(dev, dsi_base, 0x100);
+ 		if (!t->dsi)
+ 			return -ENOMEM;
+ 		t->video = readl(t->dsi + DSI_MODE_CTRL) != 0;
++		t1000_dsi_dump(t, "en el probe");
+ 		if (video_idle_off)
+ 			t1000_dsi_video(t, false);
+ 	}
+@@ -431,6 +624,15 @@ static int t1000_probe(struct i2c_client *client)
+ 	 * el aviso «Orange State» de bootloader desbloqueado en la capa 3. En Android las quita SurfaceFlinger; aquí
+ 	 * se apagan todas menos la 0 (OVL_SRC_CON, 0x2c).
+ 	 */
++	if (!of_property_read_u32(dev->of_node, "mediatek,mmsys-base", &ovl_base)) {
++		t->mmsys = devm_ioremap(dev, ovl_base, 0x200);
++		if (!t->mmsys)
++			return -ENOMEM;
++		t->mm_cg[0] = readl(t->mmsys + MMSYS_CG_CON0);
++		t->mm_cg[1] = readl(t->mmsys + MMSYS_CG_CON1);
++		dev_info(dev, "MMSYS CG 0x%08x 0x%08x\n", t->mm_cg[0], t->mm_cg[1]);
++	}
++
+ 	if (!of_property_read_u32(dev->of_node, "mediatek,ovl-base", &ovl_base)) {
+ 		void __iomem *ovl = ioremap(ovl_base, 0x100);
+ 
+@@ -446,11 +648,22 @@ static int t1000_probe(struct i2c_client *client)
+ 
+ 	/* Si duerme no responde; no es motivo para fallar (la interfaz sigue siendo útil al despertar). */
+ 	ret = t1000_read_sysinfo(t);
+-	if (ret)
++	if (ret) {
+ 		dev_warn(dev, "no responde (%d); ¿dormido?\n", ret);
+-	else
++	} else {
++		ret = t1000_get_mode(t);
++		if (ret >= 0 && ret <= 0x02)
++			t->mode = ret;
+ 		dev_info(dev, "T1000 %ux%u, firmware %s, waveform %s, temperatura %d, modo %d\n",
+-			 t->width, t->height, t->version, t->waveform, t1000_get_temp(t), t1000_get_mode(t));
++			 t->width, t->height, t->version, t->waveform, t1000_get_temp(t), ret);
++	}
++
++	INIT_DELAYED_WORK(&t->refresh, t1000_refresh_work);
++	t->auto_refresh = true;
++	WRITE_ONCE(t1000_dev, t);
++	ret = devm_add_action_or_reset(dev, t1000_refresh_stop, t);
++	if (ret)
++		return ret;
+ 
+ 	t->misc.minor = MISC_DYNAMIC_MINOR;
+ 	t->misc.name = "t1000";
+@@ -462,6 +675,76 @@ static int t1000_probe(struct i2c_client *client)
+ 	return devm_add_action_or_reset(dev, t1000_misc_deregister, &t->misc);
+ }
+ 
++/*
++ * Suspensión: dormir el T1000 (~130 mA menos). Al reanudar, despertarlo y mandar un refresco con el modo que
++ * tenía: tras el sueño 0x0f no se queda listo sin recibir vídeo MIPI (el refresco lo activa) y, si no, la
++ * siguiente orden de dormir lo deja sin despertar.
++ */
++static bool pm_sleep;	/* el T1000 aún falla al despertar ~1/10: desactivado por omisión */
++module_param(pm_sleep, bool, 0644);
++
++/*
++ * El dominio MM queda encendido al suspender (si se apaga se pierde el pipeline de lk), pero sus relojes en marcha
++ * gastan ~60 mA: cerrarlos todos (los registros se conservan) y al reanudar reabrir los que estaban abiertos.
++ */
++static bool mm_gate = true;
++module_param(mm_gate, bool, 0644);
++
++static void t1000_mm_gate(struct t1000 *t)
++{
++	if (!t->mmsys || !mm_gate)
++		return;
++	t->mm_cg[0] = readl(t->mmsys + MMSYS_CG_CON0);
++	t->mm_cg[1] = readl(t->mmsys + MMSYS_CG_CON1);
++	writel(~0u, t->mmsys + MMSYS_CG_SET0);
++	writel(~0u, t->mmsys + MMSYS_CG_SET1);
++}
++
++static int t1000_suspend(struct device *dev)
++{
++	struct t1000 *t = dev_get_drvdata(dev);
++	int ret;
++
++	cancel_delayed_work_sync(&t->refresh);
++	t->pm_slept = false;
++	if (!pm_sleep || t->asleep) {
++		t1000_mm_gate(t);
++		return 0;
++	}
++	t->pm_mode = t1000_get_mode(t);
++	ret = t1000_sleep(t);
++	if (ret)
++		dev_warn(dev, "no se pudo dormir el T1000 (%d)\n", ret);
++	else
++		t->pm_slept = true;
++	t1000_mm_gate(t);
++	return 0;
++}
++
++static int t1000_resume(struct device *dev)
++{
++	struct t1000 *t = dev_get_drvdata(dev);
++	int ret;
++
++	if (t->dsi)
++		t1000_dsi_dump(t, "al reanudar");
++	if (t->mmsys) {
++		/* reabrir los relojes del display que estaban abiertos */
++		writel(~t->mm_cg[0], t->mmsys + MMSYS_CG_CLR0);
++		writel(~t->mm_cg[1], t->mmsys + MMSYS_CG_CLR1);
++	}
++	if (!t->pm_slept)
++		return 0;
++	ret = t1000_wake(t);
++	if (!ret)
++		ret = t1000_set_mode(t, t1000_mode_allowed(t->pm_mode) && t->pm_mode != 0x10 ? t->pm_mode : 1);
++	if (ret)
++		dev_warn(dev, "el T1000 no despierta bien (%d)\n", ret);
++	return 0;
++}
++
++static DEFINE_SIMPLE_DEV_PM_OPS(t1000_pm, t1000_suspend, t1000_resume);
++
+ static const struct of_device_id t1000_of_match[] = {
+ 	{ .compatible = "eink,t1000" },
+ 	{ }
+@@ -473,6 +756,7 @@ static struct i2c_driver t1000_driver = {
+ 		.name = "eink-t1000",
+ 		.of_match_table = t1000_of_match,
+ 		.dev_groups = t1000_groups,
++		.pm = pm_sleep_ptr(&t1000_pm),
+ 	},
+ 	.probe = t1000_probe,
+ };
+diff --git a/drivers/power/supply/mt6351-battery.c b/drivers/power/supply/mt6351-battery.c
+index e449d4acb586..f31de0198159 100644
+--- a/drivers/power/supply/mt6351-battery.c
++++ b/drivers/power/supply/mt6351-battery.c
+@@ -57,6 +57,8 @@
+ #define MT6351_FGADC_CK_PDN		(BIT(2) | BIT(3))	/* analógico y digital */
+ #define MT6351_FGADC_CON0		0x0ca4
+ #define MT6351_FGADC_CON11		0x0cba	/* FG_CURRENT_OUT */
++#define MT6351_FGADC_CON1		0x0ca6	/* FG_CAR_34_19 */
++#define MT6351_FGADC_CON2		0x0ca8	/* FG_CAR_18_03 */
+ #define MT6351_FG_LATCHDATA_ST		BIT(10)
+ #define FG_UA_PER_LSB_X1000		158122
+ #define FG_R_FG_MOHM			10
+@@ -167,6 +169,37 @@ static int mt6351_bat_current_ua(struct mt6351_bat *b, int *ua)
+ 	return 0;
+ }
+ 
++/*
++ * Carga acumulada en µAh desde que se puso a cero el CAR (positiva cargando): fgauge_read_columb_internal() del
++ * BSP, 17 bits + signo con LSB de 359,86 µAh / 8 (FG_OSR) y el mismo ajuste de R_FG y CAR_TUNE que la corriente.
++ * Sigue contando con la tablet suspendida.
++ */
++static int mt6351_bat_charge_uah(struct mt6351_bat *b, int *uah)
++{
++	u32 hi = 0, lo = 0;
++	s64 car;
++	int ret;
++
++	mutex_lock(&b->lock);
++	regmap_update_bits(b->regmap, MT6351_FGADC_CON0, 0xff00, 0x0200);	/* leer */
++	ret = mt6351_fg_wait(b, true);
++	if (!ret)
++		ret = regmap_read(b->regmap, MT6351_FGADC_CON1, &hi) ?: regmap_read(b->regmap, MT6351_FGADC_CON2, &lo);
++	regmap_update_bits(b->regmap, MT6351_FGADC_CON0, 0xff00, 0x0800);	/* borrar estado */
++	mt6351_fg_wait(b, false);
++	regmap_update_bits(b->regmap, MT6351_FGADC_CON0, 0xff00, 0);
++	mutex_unlock(&b->lock);
++	if (ret)
++		return ret;
++	car = (lo >> 11) | (hi & 0xfff) << 5;
++	if (car == 0x1ffff)
++		car = 0;
++	else if (hi & BIT(15))
++		car -= 0x1ffff;
++	*uah = div_s64(car * 35986 * 20 / FG_R_FG_MOHM * FG_CAR_TUNE, 100 * 8 * 100);
++	return 0;
++}
++
+ static void mt6351_fg_init(struct mt6351_bat *b)
+ {
+ 	u32 v = 0;
+@@ -249,6 +282,8 @@ static int mt6351_bat_get_property(struct power_supply *psy, enum power_supply_p
+ 		return mt6351_bat_temp(b, &val->intval);
+ 	case POWER_SUPPLY_PROP_CURRENT_NOW:
+ 		return mt6351_bat_current_ua(b, &val->intval);
++	case POWER_SUPPLY_PROP_CHARGE_COUNTER:
++		return mt6351_bat_charge_uah(b, &val->intval);
+ 	case POWER_SUPPLY_PROP_VOLTAGE_MAX_DESIGN:
+ 		val->intval = 4352000;
+ 		return 0;
+@@ -266,6 +301,7 @@ static const enum power_supply_property mt6351_bat_props[] = {
+ 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
+ 	POWER_SUPPLY_PROP_CAPACITY,
+ 	POWER_SUPPLY_PROP_CURRENT_NOW,
++	POWER_SUPPLY_PROP_CHARGE_COUNTER,
+ 	POWER_SUPPLY_PROP_VOLTAGE_MAX_DESIGN,
+ 	POWER_SUPPLY_PROP_VOLTAGE_MIN_DESIGN,
+ };
+diff --git a/drivers/soc/mediatek/mt6797-spm.c b/drivers/soc/mediatek/mt6797-spm.c
+index d9585ed0d280..5e00e18c28dc 100644
+--- a/drivers/soc/mediatek/mt6797-spm.c
++++ b/drivers/soc/mediatek/mt6797-spm.c
+@@ -64,6 +64,10 @@
+ #define LITTLE_CLK_CON			0x2c4
+ #define SPM_MAS_PAUSE_MASK_B		0x408
+ #define SPM_MAS_PAUSE2_MASK_B		0x40c
++#define SPM_MDBSI_CON			0x404
++#define SPM_BSI_GEN			0x410
++#define SPM_BSI_EN_SR			0x414
++#define SPM_BSI_CLK_SR			0x418
+ #define SPM_BSI_D0_SR			0x41c
+ #define SPM_BSI_D1_SR			0x420
+ #define SPM_BSI_D2_SR			0x424
+@@ -87,6 +91,7 @@
+ #define MIF_APBEN			BIT(3)
+ #define PCM_TIMER_EN			BIT(5)
+ #define IM_NONRP_EN			BIT(6)
++#define IM_PDN				BIT(4)
+ #define PCM_WDT_EN			BIT(8)
+ #define PCM_WDT_WAKE_MODE		BIT(9)
+ #define SPM_SRAM_SLEEP_B		BIT(10)
+@@ -163,7 +168,9 @@
+ #define WDT_REQ_IRQ_KEY			0x44000000
+ #define WDT_REQ_SPM_SCPSYS		BIT(1)
+ 
+-#define PCM_BUF_SIZE			0x4000
++#define PCM_BUF_SIZE			0x10000
++/* vcorefs alineado a 16 KiB como en Android (IM_PTR 0xfd7e4000); en 0x2000 el PCM abortaba casi siempre */
++#define VCOREFS_OFF			0x4000
+ 
+ struct mt6797_pcm {
+ 	u32 pa;
+@@ -202,6 +209,8 @@ static unsigned int flags_set, flags_clear;
+ static bool wdt_wake, mark_recovery, pmic_mode = true, safety = true, pcm_wdt = true;
+ module_param(pcm_wdt, bool, 0644);
+ module_param(safety, bool, 0644);
++static bool rgu_net = true;
++module_param(rgu_net, bool, 0644);
+ static unsigned int wake_src;
+ module_param(wake_src, uint, 0644);
+ static unsigned int idle_mask, trace_iters, rsv5 = 1, standby_clear, src_mask_clear;
+@@ -352,11 +361,29 @@ static void mt6797_spm_pwrap_suspend_table(struct mt6797_spm *s)
+ }
+ 
+ /* __spm_reset_and_init_pcm() sin la parte de vcorefs (no hay firmware residente) */
++/* pruebas: una línea por paso de .enter (con no_console_suspend llega al pstore) */
++static bool trace_steps;
++module_param(trace_steps, bool, 0644);
++
+ static int mt6797_spm_reset_pcm(const struct mt6797_pcm *pcm)
+ {
+-	u32 con1;
++	u32 con1, r0 = spm_rd(PCM_REG0_DATA);
+ 	int i;
+ 
++	/*
++	 * __spm_reset_and_init_pcm() del BSP: r0 controla la memoria (relojes/señales de la DRAM) y durante el reset
++	 * las salidas pasan a POWER_ON_VAL0; copiar r0 ahí, quitar a r0/r7 el control (PWR_IO_EN) y parar el
++	 * temporizador. Sin esto, resetear el firmware de suspensión tras despertar colgaba a veces la CPU aquí.
++	 */
++	if (spm_rd(SPM_POWER_ON_VAL0) != r0) {
++		if (trace_steps)
++			pr_info("SPM: VAL0 0x%08x -> r0 0x%08x (PWR_IO_EN 0x%x)\n", spm_rd(SPM_POWER_ON_VAL0), r0,
++				spm_rd(PCM_PWR_IO_EN));
++		spm_wr(SPM_POWER_ON_VAL0, r0);
++	}
++	spm_wr(PCM_PWR_IO_EN, 0);
++	spm_wr(PCM_CON1, SPM_REGWR_CFG_KEY | (spm_rd(PCM_CON1) & ~PCM_TIMER_EN));
++
+ 	spm_wr(PCM_CON0, SPM_REGWR_CFG_KEY | PCM_CK_EN | PCM_SW_RESET);
+ 	for (i = 0; (spm_rd(PCM_FSM_STA) & 0x7fffff) != PCM_FSM_STA_DEF; i++) {
+ 		if (i > 5000)
+@@ -371,12 +398,28 @@ static int mt6797_spm_reset_pcm(const struct mt6797_pcm *pcm)
+ 	return 0;
+ }
+ 
++/* espera tras IM_KICK: 0 ninguna (como el BSP), 1 500 us, 2 hasta IM_STATE = 4 */
++static unsigned int im_wait = 1;
++module_param(im_wait, uint, 0644);
++static bool im_quiet;
++
++/*
++ * Modo 4 GB (infracfg_ao + 0xf00 bit 13, dram_4gb_init del BSP): el SPM ve la DRAM 0x40000000-0xbfffffff
++ * desplazada 0x40000000 (MAPPING_DRAM_ACCESS_ADDR). Android carga el vcorefs con IM_PTR 0xfd7e4000.
++ */
++static u32 dram_ofs;
++
++static u32 spm_dram_addr(phys_addr_t pa)
++{
++	return pa >= 0x40000000 && pa < 0xc0000000 ? pa + dram_ofs : pa;
++}
++
+ static void mt6797_spm_kick_im(const struct mt6797_pcm *pcm)
+ {
+ 	u32 con0;
+ 	int i;
+ 
+-	spm_wr(PCM_IM_PTR, pcm->pa);
++	spm_wr(PCM_IM_PTR, spm_dram_addr(pcm->pa));
+ 	spm_wr(PCM_IM_LEN, pcm->size - 1);
+ 	con0 = spm_rd(PCM_CON0) & ~(IM_KICK_L | PCM_KICK_L);
+ 	spm_wr(PCM_CON0, con0 | SPM_REGWR_CFG_KEY | PCM_CK_EN | IM_KICK_L);
+@@ -391,6 +434,19 @@ static void mt6797_spm_kick_im(const struct mt6797_pcm *pcm)
+ 	spm_wr(PCM_PWR_IO_EN, 0);
+ 	for (i = 0; i < 16; i++)
+ 		spm_wr(PCM_EVENT_VECTOR(i), pcm->vec[i]);
++	/*
++	 * Esperar a que el IM termine de copiar el programa (PCM_FSM_STA.IM_KICK, bit 22): sin esto el PCM
++	 * arrancaba con la copia a medias y ejecutaba basura (vcorefs: r1 nunca 1; suspensión: aleatoria).
++	 */
++	if (im_wait == 1) {
++		udelay(500);
++	} else if (im_wait == 2) {
++		for (i = 0; i < 5000 && ((spm_rd(PCM_FSM_STA) >> 7) & 7) != 4; i++)
++			udelay(1);
++		if (!im_quiet)
++			pr_info("SPM: IM %s: IM_STATE 4 tras %d us (fsm 0x%08x)\n", pcm->version, i,
++				spm_rd(PCM_FSM_STA));
++	}
+ }
+ 
+ /* __spm_set_power_control(suspend_ctrl) con los valores de mt_spm_sleep.c ya calculados */
+@@ -472,6 +528,11 @@ static void mt6797_spm_clean_after_wakeup(void)
+ 
+ static bool vcorefs;
+ module_param(vcorefs, bool, 0444);
++/* Android: 0x40400 (RUN_COMMON_SCENARIO | EN_SEGMENT_E2, con DVFS); por defecto DVFS deshabilitado */
++static unsigned int vcorefs_flags = VCOREFS_FLAGS;
++module_param(vcorefs_flags, uint, 0644);
++static bool vcorefs_dcm_lock = true;
++module_param(vcorefs_dcm_lock, bool, 0644);
+ MODULE_PARM_DESC(vcorefs, "mantener el firmware vcorefs del SPM corriendo (como Android)");
+ 
+ /* PMIC_WRAP_PHASE_NORMAL (IDX_NM_*): VCORE 1,0 → 0,9 V y modo PWM/auto de VGPU */
+@@ -492,7 +553,55 @@ static void mt6797_spm_pwrap_normal_table(struct mt6797_spm *s)
+ 	writel((gpu & ~0x7) | 4, s->pwrap + PWRAP_DVFS_WDATA(11));
+ }
+ 
+-static int mt6797_spm_vcorefs_start(struct mt6797_spm *s)
++/* Comparar la memoria de instrucciones del PCM (lectura por PCM_IM_HOST_RW) con el programa cargado */
++#define PCM_IM_HOST_RW_PTR		0x038
++#define PCM_IM_HOST_RW_DAT		0x03c
++static u32 mt6797_spm_im_read(unsigned int a)
++{
++	u32 v;
++
++	spm_wr(PCM_IM_HOST_RW_PTR, BIT(31) | a);
++	spm_rd(PCM_IM_HOST_RW_DAT);
++	v = spm_rd(PCM_IM_HOST_RW_DAT);
++	spm_wr(PCM_IM_HOST_RW_PTR, 0);
++	return v;
++}
++
++static void mt6797_spm_im_check(struct mt6797_spm *s, const struct mt6797_pcm *pcm, unsigned int off,
++				const char *when)
++{
++	static const unsigned int a[] = { 0, 1, 0x100, 0x3ff, 0x400, 0x401, 0x402, 0x600, 0x700, 0x71d, 0x7f4 };
++	const u32 *w = s->buf + off;
++	unsigned int i, bad = 0;
++	char buf[256];
++	int n = 0;
++
++	for (i = 0; i < ARRAY_SIZE(a); i++) {
++		u32 v;
++
++		if (a[i] >= pcm->size)
++			continue;
++		v = mt6797_spm_im_read(a[i]);
++		if (v != w[a[i]]) {
++			bad++;
++			n += scnprintf(buf + n, sizeof(buf) - n, " %x:%08x/%08x", a[i], v, w[a[i]]);
++		}
++	}
++	dev_info(s->dev, "IM %s (%s): %u distintas%s\n", pcm->version, when, bad, bad ? buf : "");
++}
++
++static bool im_test;
++module_param(im_test, bool, 0644);
++
++/* el firmware vcorefs sigue en su bucle (no en reposo ni en su ruta de salida 0x5d9-0x5ed) */
++static bool vcorefs_running(void)
++{
++	u32 pc = spm_rd(PCM_REG15_DATA);
++
++	return pc && (pc < 0x5d9 || pc > 0x5ed);
++}
++
++static int mt6797_spm_vcorefs_start_once(struct mt6797_spm *s)
+ {
+ 	int ret, i;
+ 
+@@ -501,11 +610,13 @@ static int mt6797_spm_vcorefs_start(struct mt6797_spm *s)
+ 	if (ret)
+ 		return ret;
+ 	mt6797_spm_kick_im(&s->vcorefs);
++	if (im_test)
++		mt6797_spm_im_check(s, &s->vcorefs, VCOREFS_OFF, "cargado");
+ 	/* __spm_set_power_control(vcore_dvfs_ctrl) */
+ 	spm_wr(SPM_AP_STANDBY_CON, BIT(20) | BIT(19) | (spm_rd(SPM_AP_STANDBY_CON) & SRCCLKENI_MASK_B));
+-	spm_wr(SPM_SRC_REQ, BIT(6) | BIT(5));			/* spm_dvfs_force_down, spm_dvfs_req */
++	spm_wr(SPM_SRC_REQ, BIT(6));				/* spm_dvfs_force_down (Android: 0x40, sin spm_dvfs_req) */
+ 	spm_wr(SPM_SRC_MASK, BIT(28));				/* emi_bw_dvfs_req_mask */
+-	spm_wr(SPM_SRC2_MASK, BIT(26) | BIT(8) | 0x07);
++	spm_wr(SPM_SRC2_MASK, BIT(26) | BIT(25) | BIT(8) | 0x07);	/* Android: 0x6000107 */
+ 	spm_wr(SPM_CLK_CON, spm_rd(SPM_CLK_CON) & ~CC_SRCLKENA_MASK_0);
+ 	for (i = 0; i < 10; i++)
+ 		spm_wr(MP0_CPU0_WFI_EN + 4 * i, 0);
+@@ -516,19 +627,70 @@ static int mt6797_spm_vcorefs_start(struct mt6797_spm *s)
+ 	spm_wr(SPM_MAS_PAUSE_MASK_B, 0xffffffff);
+ 	spm_wr(SPM_MAS_PAUSE2_MASK_B, 0xffffffff);
+ 	spm_wr(PCM_REG_DATA_INI, 0);
+-	spm_wr(SPM_SW_FLAG, VCOREFS_FLAGS);
++	spm_wr(SPM_SW_FLAG, vcorefs_flags);
++	/* SW_RSV_1[3:0]: orden del CPU al firmware; un 0xF (OFFLOAD) viejo lo hace salir nada más arrancar */
++	spm_wr(SPM_SW_RSV_1, SPM_CLEAN_WAKE_EVENT_DONE);
+ 	spm_wr(SPM_SW_RSV_0, 0);
+-	spm_wr(SPM_CLK_CON, spm_rd(SPM_CLK_CON) & ~SPM_LOCK_INFRA_DCM);
++	/*
++	 * Android: infra_dcm_lock = 0 (su driver DCM configura el DCM de infra). En mainline el PCM se quedaba parado
++	 * tras accesos al bus (r15 fijo justo después de una lectura/escritura): mantener el DCM bloqueado.
++	 */
++	if (vcorefs_dcm_lock)
++		spm_wr(SPM_CLK_CON, spm_rd(SPM_CLK_CON) | SPM_LOCK_INFRA_DCM);
++	else
++		spm_wr(SPM_CLK_CON, spm_rd(SPM_CLK_CON) & ~SPM_LOCK_INFRA_DCM);
+ 	spm_wr(PCM_PWR_IO_EN, PCM_PWRIO_EN_R0 | PCM_PWRIO_EN_R7);
+ 	i = spm_rd(PCM_CON0) & ~(IM_KICK_L | PCM_KICK_L);
+ 	spm_wr(PCM_CON0, i | SPM_REGWR_CFG_KEY | PCM_CK_EN | PCM_KICK_L);
+ 	spm_wr(PCM_CON0, i | SPM_REGWR_CFG_KEY | PCM_CK_EN);
+-	udelay(100);
+-	dev_info(s->dev, "vcorefs en marcha: r15 0x%x r1 0x%x r6 0x%08x fsm 0x%08x\n", spm_rd(PCM_REG15_DATA),
++	{
++		/* traza del arranque: cada cambio de r15 durante ~20 ms */
++		u32 last = ~0, pc;
++		int n = 0;
++
++		for (i = 0; i < 20000 && n < 64 && !im_quiet; i++) {
++			pc = spm_rd(PCM_REG15_DATA);
++			if (pc != last) {
++				dev_info(s->dev, "vcorefs traza %d: r15 0x%03x r1 %x r6 0x%08x r14 0x%08x fsm 0x%08x\n",
++					 i, pc, spm_rd(PCM_REG1_DATA), spm_rd(PCM_REG6_DATA),
++					 spm_rd(PCM_REG0_DATA + 14 * 4), spm_rd(PCM_FSM_STA));
++				last = pc;
++				n++;
++			}
++			udelay(1);
++		}
++	}
++	if (im_test)
++		mt6797_spm_im_check(s, &s->vcorefs, VCOREFS_OFF, "tras correr");
++	if (!im_quiet)
++		dev_info(s->dev, "vcorefs en marcha: r15 0x%x r1 0x%x r6 0x%08x fsm 0x%08x\n", spm_rd(PCM_REG15_DATA),
+ 		 spm_rd(PCM_REG1_DATA), spm_rd(PCM_REG6_DATA), spm_rd(PCM_FSM_STA));
+ 	return 0;
+ }
+ 
++/*
++ * El arranque del vcorefs es aleatorio: a veces el PCM sale enseguida de 0x400 y vuelve a reposo (r15 = 0); otras
++ * llega a su bucle de espera (0x427/0x430). Reintentar hasta que quede corriendo.
++ */
++static int mt6797_spm_vcorefs_start(struct mt6797_spm *s)
++{
++	int i, ret = 0;
++
++	for (i = 0; i < 20; i++) {
++		ret = mt6797_spm_vcorefs_start_once(s);
++		if (ret)
++			return ret;
++		mdelay(1);
++		if (vcorefs_running())
++			break;
++	}
++	if (!im_quiet)
++		dev_info(s->dev, "vcorefs: %s tras %d intentos (r15 0x%x fsm 0x%08x)\n",
++			 vcorefs_running() ? "corriendo" : "NO arranca", i + 1, spm_rd(PCM_REG15_DATA),
++			 spm_rd(PCM_FSM_STA));
++	return 0;
++}
++
+ /*
+  * __spm_reset_and_init_pcm() con vcorefs corriendo (r1 == 1): pedirle que pare (evento de CPU), copiar r0 a
+  * POWER_ON_VAL0 (control de memoria durante el reset del PCM), soltar r0/r7, parar el temporizador y guardar el
+@@ -545,19 +707,24 @@ static void mt6797_spm_vcorefs_stop(struct mt6797_spm *s)
+ 	spm_wr(SPM_WAKEUP_EVENT_MASK, mask & ~BIT(0));
+ 	spm_wr(SPM_SW_RSV_1, (spm_rd(SPM_SW_RSV_1) & ~0xf) | SPM_OFFLOAD);
+ 	spm_wr(SPM_CPU_WAKEUP_EVENT, 1);
+-	for (i = 0; i < 2000 && !(spm_rd(SPM_IRQ_STA) & ISRS_PCM_RETURN); i++)
++	for (i = 0; i < 5000 && !(spm_rd(SPM_IRQ_STA) & ISRS_PCM_RETURN); i++)
+ 		udelay(1);
++	if (i >= 5000)
++		dev_warn(s->dev, "vcorefs stop: SW_RSV_1 0x%x r12 0x%08x r15 0x%x irq_sta 0x%x wake_sta 0x%08x\n",
++			 spm_rd(SPM_SW_RSV_1), spm_rd(PCM_REG0_DATA + 12 * 4), spm_rd(PCM_REG15_DATA),
++			 spm_rd(SPM_IRQ_STA), spm_rd(SPM_WAKEUP_STA));
+ 	spm_wr(SPM_CPU_WAKEUP_EVENT, 0);
+ 	spm_wr(SPM_WAKEUP_EVENT_MASK, mask);
+ 	spm_wr(SPM_SW_RSV_1, (spm_rd(SPM_SW_RSV_1) & ~0xf) | SPM_CLEAN_WAKE_EVENT_DONE);
+-	if (i >= 2000)
++	if (i >= 5000)
+ 		dev_warn(s->dev, "vcorefs no vuelve: r15 0x%x fsm 0x%08x\n", spm_rd(PCM_REG15_DATA),
+ 			 spm_rd(PCM_FSM_STA));
+ 	spm_wr(SPM_POWER_ON_VAL0, spm_rd(PCM_REG0_DATA));
+ 	spm_wr(PCM_PWR_IO_EN, 0);
+ 	spm_wr(PCM_CON1, SPM_REGWR_CFG_KEY | (spm_rd(PCM_CON1) & ~PCM_TIMER_EN));
+ 	spm_wr(SPM_SW_RSV_5, (spm_rd(SPM_SW_RSV_5) & ~0x3) | ((spm_rd(PCM_REG6_DATA) >> 23) & 0x3));
+-	dev_info(s->dev, "vcorefs parado: VAL0 0x%08x RSV_5 0x%08x\n", spm_rd(SPM_POWER_ON_VAL0),
++	if (!im_quiet)
++		dev_info(s->dev, "vcorefs parado: VAL0 0x%08x RSV_5 0x%08x\n", spm_rd(SPM_POWER_ON_VAL0),
+ 		 spm_rd(SPM_SW_RSV_5));
+ }
+ 
+@@ -565,6 +732,133 @@ static void mt6797_spm_vcorefs_stop(struct mt6797_spm *s)
+  * Pruebas: despertar con el APXGPT1 (fuente R12_APXGPT1_EVENT_B, bit 4) a 32 kHz en vez del temporizador del PCM.
+  * Mainline no usa el GPT (reloj infra_apxgpt, CG0 bit 6, cortado).
+  */
++/* vcorefs_try=N: relanzar el vcorefs N veces (con im_wait/im_test actuales) y contar cuántas llega a r1 = 1 */
++static int vcorefs_try_set(const char *val, const struct kernel_param *kp)
++{
++	unsigned int n, i, ok = 0;
++	int ret = kstrtouint(val, 0, &n);
++
++	if (ret || !spm)
++		return ret ? ret : -ENODEV;
++	im_quiet = true;
++	for (i = 0; i < n; i++) {
++		if (vcorefs_running())
++			mt6797_spm_vcorefs_stop(spm);
++		mt6797_spm_vcorefs_start(spm);
++		msleep(20);
++		if (vcorefs_running())
++			ok++;
++	}
++	im_quiet = false;
++	pr_info("SPM: vcorefs_try im_wait %u im_test %d: %u/%u con r1 = 1 (r15 0x%x fsm 0x%08x)\n", im_wait, im_test,
++		ok, n, spm_rd(PCM_REG15_DATA), spm_rd(PCM_FSM_STA));
++	return 0;
++}
++static const struct kernel_param_ops vcorefs_try_ops = { .set = vcorefs_try_set };
++module_param_cb(vcorefs_try, &vcorefs_try_ops, NULL, 0200);
++
++/*
++ * pcm_prog=1 (pruebas, con la CPU despierta): programa PCM propio (ISA en notes/mainline.md) que repite los dos
++ * handshakes del firmware de suspensión con el pwrap: PWRAP_SLEEP_REQ (r7 bit 0) con ACK en r13 bit 20 (vector 1,
++ * 26M sleep) y PMIC_IRQ_REQ_EN (r7 bit 26) con SPM_PWRAP_IRQ_ACK (WAKEUP_MISC bit 30), que el vector 0 (26M wake)
++ * espera sin límite. Resultado: r11 = r13 con SLEEP_REQ, r5 != 0 si llegó el ACK de IRQ, r8 = WAKEUP_MISC al final.
++ * Usa el búfer del firmware de suspensión y lo vuelve a cargar al terminar.
++ */
++#define SPM_WAKEUP_MISC			0x164
++#define PCM_NOP				0x17c07c1f
++/* src/pcm/pwrap.s ensamblado con scripts/pcm-as.py */
++static const u32 pcm_prog_pwrap[] = {
++	0x1840001f, 0x00000001, 0xe8208000, 0x10006604, 0xc0de0001, 0xa1d00407,
++	0x1b80001f, 0x20000208, 0x1280341f, 0x81f00407, 0x1b80001f, 0x20000208,
++	0xe8208000, 0x10006604, 0xc0de0002, 0xa1dd0407, 0x1940001f, 0x00000001,
++	0x18d0001f, 0x10006164, 0x80df0403, 0xd80083a3, 0x17c07c1f, 0x1b80001f,
++	0x20000010, 0x1150941f, 0xd8008245, 0x17c07c1f, 0x17c07c1f, 0x81fd0407,
++	0x1a10001f, 0x10006164, 0x1240381f, 0xe8208000, 0x10006604, 0xc0de0003,
++	0xf0000000, 0x17c07c1f,
++};
++
++static unsigned int prog_off;
++
++static int pcm_prog_set(const char *val, const struct kernel_param *kp)
++{
++	struct mt6797_pcm p = { .size = 0x400 + ARRAY_SIZE(pcm_prog_pwrap) };
++	u32 *w, con0;
++	unsigned int n;
++	int i, ret = kstrtouint(val, 0, &n);
++
++	if (ret || !spm)
++		return ret ? ret : -ENODEV;
++	/* n: bit 0 replace (sin IM_NONRP_EN), bit 1 pulso IM_PDN antes, bit 2 cargar en replace y relanzar en non-replace */
++	if (n > 7)
++		return -EINVAL;
++	if (vcorefs_running())
++		dev_warn(spm->dev, "pcm_prog: PCM en marcha (r15 0x%x), se reinicia\n", spm_rd(PCM_REG15_DATA));
++	/* dirección nunca usada y distinta en cada prueba: el IM no recarga si IM_PTR no cambia */
++	prog_off = prog_off == 0x8000 ? 0xc000 : 0x8000;
++	w = spm->buf + prog_off;
++	for (i = 0; i < 0x400; i++)
++		w[i] = PCM_NOP;
++	memcpy(w + 0x400, pcm_prog_pwrap, sizeof(pcm_prog_pwrap));
++	/* marcas 0xc0de000X con el número de prueba, para ver si el IM cargó esta copia */
++	for (i = 0x400; i < p.size; i++)
++		if ((w[i] & 0xfffffff0) == 0xc0de0000)
++			w[i] |= n << 8;
++	wmb();
++	p.pa = spm->buf_pa + prog_off;
++	spm_wr(SPM_SW_DEBUG, 0);
++	pr_info("SPM: pcm_prog antes: r7 0x%08x r13 0x%08x misc 0x%08x\n", spm_rd(PCM_REG0_DATA + 7 * 4),
++		spm_rd(PCM_REG13_DATA), spm_rd(SPM_WAKEUP_MISC));
++	if (n & 4) {
++		p.replace = 1;
++		mt6797_spm_reset_pcm(&p);
++		mt6797_spm_kick_im(&p);
++	}
++	p.replace = n & 1;
++	ret = mt6797_spm_reset_pcm(&p);
++	if (ret)
++		goto out;
++	if (n & 2) {
++		spm_wr(PCM_CON1, spm_rd(PCM_CON1) | SPM_REGWR_CFG_KEY | IM_PDN);
++		udelay(10);
++		spm_wr(PCM_CON1, (spm_rd(PCM_CON1) & ~IM_PDN) | SPM_REGWR_CFG_KEY);
++	}
++	mt6797_spm_kick_im(&p);
++	pr_info("SPM: pcm_prog %u: IM_PTR 0x%08x IM_LEN 0x%x CON1 0x%08x fsm 0x%08x\n", n,
++		spm_rd(PCM_IM_PTR), spm_rd(PCM_IM_LEN), spm_rd(PCM_CON1), spm_rd(PCM_FSM_STA));
++	spm_wr(SPM_IRQ_STA, ISRS_PCM_RETURN);
++	spm_wr(PCM_PWR_IO_EN, PCM_PWRIO_EN_R7);
++	con0 = spm_rd(PCM_CON0) & ~(IM_KICK_L | PCM_KICK_L);
++	spm_wr(PCM_CON0, con0 | SPM_REGWR_CFG_KEY | PCM_CK_EN | PCM_KICK_L);
++	spm_wr(PCM_CON0, con0 | SPM_REGWR_CFG_KEY | PCM_CK_EN);
++	{
++		u32 last = ~0, pc;
++		int k = 0;
++
++		for (i = 0; i < 50000 && k < 24; i++) {
++			pc = spm_rd(PCM_REG15_DATA);
++			if (pc != last) {
++				pr_info("SPM: pcm_prog traza %d us: r15 0x%03x debug 0x%08x fsm 0x%08x irq 0x%x\n", i, pc,
++					spm_rd(SPM_SW_DEBUG), spm_rd(PCM_FSM_STA), spm_rd(SPM_IRQ_STA));
++				last = pc;
++				k++;
++			}
++			udelay(1);
++		}
++	}
++	pr_info("SPM: pcm_prog %s tras %d us: debug 0x%08x r15 0x%x r10(r13) 0x%08x r5 0x%x r3 0x%x r8 0x%08x r9(r14) 0x%08x r7 0x%08x fsm 0x%08x\n",
++		spm_rd(SPM_IRQ_STA) & ISRS_PCM_RETURN ? "terminado" : "NO TERMINA", i, spm_rd(SPM_SW_DEBUG),
++		spm_rd(PCM_REG15_DATA), spm_rd(PCM_REG0_DATA + 10 * 4), spm_rd(PCM_REG0_DATA + 5 * 4),
++		spm_rd(PCM_REG0_DATA + 3 * 4), spm_rd(PCM_REG0_DATA + 8 * 4), spm_rd(PCM_REG0_DATA + 9 * 4),
++		spm_rd(PCM_REG0_DATA + 7 * 4), spm_rd(PCM_FSM_STA));
++	ret = mt6797_spm_reset_pcm(&p);
++	spm_wr(PCM_PWR_IO_EN, 0);
++	spm_wr(SPM_IRQ_STA, ISRS_PCM_RETURN);
++out:
++	return ret;
++}
++static const struct kernel_param_ops pcm_prog_ops = { .set = pcm_prog_set };
++module_param_cb(pcm_prog, &pcm_prog_ops, NULL, 0200);
++
+ static unsigned int gpt_sec;
+ module_param(gpt_sec, uint, 0644);
+ 
+@@ -598,6 +892,129 @@ static void mt6797_spm_gpt_arm(unsigned int sec)
+ static bool gic_mask;
+ module_param(gic_mask, bool, 0644);
+ 
++/*
++ * Pruebas: request_uart_to_sleep() de Android. Antes de dormir, cada UART con reloj (INFRA CG0 bits 22-25 a 0)
++ * recibe UART_SLEEP_REQ (0xb4) y debe confirmar en UART_SLEEP_ACK (0xb8); si no, Android aborta la suspensión.
++ * Mainline (8250_mtk) no lo hace nunca.
++ */
++static bool uart_sleep;
++module_param(uart_sleep, bool, 0644);
++
++static void __iomem *uart_base;
++
++static int mt6797_spm_uart_sleep(bool on)
++{
++	unsigned int i, t;
++	int ret = 0;
++
++	if (!uart_sleep || !uart_base || !gpt_icfg)
++		return 0;
++	for (i = 0; i < 4; i++) {
++		void __iomem *u = uart_base + i * 0x1000;
++
++		if (readl(gpt_icfg + 0x90) & BIT(22 + i))
++			continue;	/* reloj cortado */
++		if (!on) {
++			writel(readl(u + 0xb4) & ~BIT(0), u + 0xb4);
++			continue;
++		}
++		writel(readl(u + 0xb4) | BIT(0), u + 0xb4);
++		for (t = 0; t < 1000 && !(readl(u + 0xb8) & BIT(0)); t++)
++			udelay(10);
++		pr_info("SPM: UART%u sleep %s\n", i, t < 1000 ? "ack" : "SIN ack");
++		if (t >= 1000) {
++			writel(readl(u + 0xb4) & ~BIT(0), u + 0xb4);
++			ret = -EBUSY;
++		}
++	}
++	return ret;
++}
++
++/*
++ * Pruebas: lk deja CONN (WiFi/BT) encendido aunque Linux no lo use (CONN_PWR_CON 0x10d). El BSP solo pone
++ * SPM_FLAG_DIS_MD_INFRA_PDN con MD1, C2K y CONN apagados; apagarlo con la secuencia de spm_mtcmos_ctrl_conn() (clk-mt6797-pg.c).
++ */
++static bool conn_off;
++module_param(conn_off, bool, 0644);
++static void mt6797_spm_conn_off(void);
++/* Escribir en conn_off_now apaga CONN en el acto (sin suspender), para aislar la secuencia. */
++static int conn_off_now_set(const char *val, const struct kernel_param *kp)
++{
++	bool old = conn_off;
++
++	conn_off = true;
++	mt6797_spm_conn_off();
++	conn_off = old;
++	return 0;
++}
++static const struct kernel_param_ops conn_off_now_ops = { .set = conn_off_now_set };
++module_param_cb(conn_off_now, &conn_off_now_ops, NULL, 0200);
++
++#define CONN_PWR_CON	0x32c
++#define SPM_PWR_STA	0x180
++#define SPM_PWR_STA2	0x184
++
++static void mt6797_spm_conn_off(void)
++{
++	void __iomem *prot;
++	unsigned int t;
++
++	if (!conn_off || !(spm_rd(CONN_PWR_CON) & BIT(2)))
++		return;
++	prot = ioremap(0x10001220, 0x10);
++	if (!prot)
++		return;
++	/* CONN_PROT_MASK de clk-mt6797-pg.c (bits 17-18); los bits 2|8 de mt_spm_mtcmos.c son de otro SoC y el
++	 * bit 2 protege el bus de MM (pantalla): cuelga el chip. */
++	writel(readl(prot) | BIT(17) | BIT(18), prot);		/* TOPAXI_PROT_EN */
++	for (t = 0; t < 1000 && (readl(prot + 8) & 0x60000) != 0x60000; t++)
++		udelay(1);
++	spm_wr(CONN_PWR_CON, spm_rd(CONN_PWR_CON) | BIT(1));	/* ISO */
++	spm_wr(CONN_PWR_CON, spm_rd(CONN_PWR_CON) | BIT(4));	/* CLK_DIS */
++	spm_wr(CONN_PWR_CON, spm_rd(CONN_PWR_CON) & ~BIT(0));	/* RST_B */
++	spm_wr(CONN_PWR_CON, spm_rd(CONN_PWR_CON) & ~BIT(2));	/* PWR_ON */
++	spm_wr(CONN_PWR_CON, spm_rd(CONN_PWR_CON) & ~BIT(3));	/* PWR_ON_2ND */
++	for (t = 0; t < 1000 && ((spm_rd(SPM_PWR_STA) | spm_rd(SPM_PWR_STA2)) & BIT(1)); t++)
++		udelay(1);
++	pr_info("SPM: CONN apagado: pwr_con %#x sta %#x/%#x prot_sta %#x\n", spm_rd(CONN_PWR_CON),
++		spm_rd(SPM_PWR_STA), spm_rd(SPM_PWR_STA2), readl(prot + 8));
++	iounmap(prot);
++}
++
++/*
++ * Pruebas: clk_buf_write_afcdac() de Android. El reloj de 26 MHz viene del MT6176 (RF) y el SPM manda por BSI
++ * la palabra de SPM_BSI_EN_SR al despertar/dormir; Android pone 0x2a80008 (afc_default) en clk_buf_init() y en
++ * cada suspensión, mainline nunca.
++ */
++static bool afcdac;
++module_param(afcdac, bool, 0644);
++#define AFCDAC_DEFAULT	0x2a80008
++
++/* __spm_backup/restore_pmic_ck_pdn(): AUXADC_CK_PDN_HWEN (TOP_CKHWEN_CON0 bit 3) a 0, EFUSE_CK_PDN (CON3 bit 2) a 1 */
++static bool pmic_ck;
++module_param(pmic_ck, bool, 0644);
++#define MT6351_TOP_CKPDN_CON3		0x024c
++#define MT6351_TOP_CKHWEN_CON0		0x0282
++static u32 pmic_ck_saved[2];
++static bool pmic_ck_done;
++
++static void mt6797_spm_pmic_ck(struct regmap *m, bool enter)
++{
++	if (enter) {
++		pmic_ck_done = pmic_ck;
++		if (!pmic_ck)
++			return;
++		regmap_read(m, MT6351_TOP_CKHWEN_CON0, &pmic_ck_saved[0]);
++		regmap_read(m, MT6351_TOP_CKPDN_CON3, &pmic_ck_saved[1]);
++		regmap_update_bits(m, MT6351_TOP_CKHWEN_CON0, BIT(3), 0);
++		regmap_update_bits(m, MT6351_TOP_CKPDN_CON3, BIT(2), BIT(2));
++	} else if (pmic_ck_done) {
++		regmap_update_bits(m, MT6351_TOP_CKHWEN_CON0, BIT(3), pmic_ck_saved[0] & BIT(3));
++		regmap_update_bits(m, MT6351_TOP_CKPDN_CON3, BIT(2), pmic_ck_saved[1] & BIT(2));
++		pmic_ck_done = false;
++	}
++}
++
+ #define GICD_PHYS	0x19000000
+ #define GICD_NREG	32
+ static u32 gic_saved[GICD_NREG];
+@@ -704,6 +1121,100 @@ static void mt6797_spm_gic_restore(void)
+ 	writel(gic_ctx.ctlr, d);
+ }
+ 
++/*
++ * El firmware de suspensión cierra al despertar relojes de infra que el BSP solo abre mientras los usa
++ * (0x54e: [infracfg+0xa8] = 2 i2c_appm; también auxadc y gce), pero que el CCF de mainline cree abiertos: sin
++ * i2c_appm el cpufreq no habla con el DA9214 (EIO) y las CPU quedan con la tensión que no toca.
++ * {set, clr, sta, bits que toca el firmware}
++ */
++static const u16 spm_fw_cg[][4] = {
++	{ 0x80, 0x84, 0x90, BIT(9) },	/* infra_gce */
++	{ 0x88, 0x8c, 0x94, BIT(10) },	/* infra_auxadc */
++	{ 0xa8, 0xac, 0xb0, BIT(1) },	/* infra_i2c_appm */
++};
++static u32 spm_fw_cg_sta[ARRAY_SIZE(spm_fw_cg)];
++
++static void mt6797_spm_cg_save(void)
++{
++	int i;
++
++	for (i = 0; gpt_icfg && i < ARRAY_SIZE(spm_fw_cg); i++)
++		spm_fw_cg_sta[i] = readl(gpt_icfg + spm_fw_cg[i][2]);
++}
++
++static void mt6797_spm_cg_restore(void)
++{
++	int i;
++
++	for (i = 0; gpt_icfg && i < ARRAY_SIZE(spm_fw_cg); i++) {
++		u32 gated = readl(gpt_icfg + spm_fw_cg[i][2]) & ~spm_fw_cg_sta[i] & spm_fw_cg[i][3];
++
++		if (gated)
++			writel(gated, gpt_icfg + spm_fw_cg[i][1]);
++	}
++}
++
++/*
++ * Parche de pcm_suspend_v20: el vector 0 (despertar 26 MHz) espera sin límite SPM_PWRAP_IRQ_ACK (0x046-0x04a,
++ * bucle sobre WAKEUP_MISC bit 30) con el temporizador ya parado: si el ACK no llega, la tablet queda dormida
++ * para siempre (ni WDT del PCM ni del TOPRGU). Se cambia por una llamada a src/pcm/espera-ack.s (en 0x720),
++ * que espera con límite y, si se agota, deja 0xdead0001 en SPM_RSV_CON y sigue.
++ */
++#define SPM_RSV_CON			0x620
++#define ACK_PATCH_PC			0x720
++static bool fw_patch = true;
++module_param(fw_patch, bool, 0444);
++
++static const u32 ack_orig[] = { 0x18d0001f, 0x10006164, 0x80df0403, 0xd82008c3, PCM_NOP };
++static const u32 ack_patch[] = {
++	0x1940001f, 0x00000001, 0x18d0001f, 0x10006164, 0x80df0403, 0xd800e5e3,
++	0x17c07c1f, 0x1b80001f, 0x20001000, 0x1150941f, 0xd800e445, 0x17c07c1f,
++	0xe8208000, 0x10006620, 0xdead0001, 0x81489801, 0xf0000000, 0x17c07c1f,
++};
++
++static void mt6797_spm_patch_suspend(struct mt6797_spm *s)
++{
++	u32 *w = s->buf;
++	int i;
++
++	if (!fw_patch || s->suspend.size != 1822 || memcmp(w + 0x46, ack_orig, sizeof(ack_orig))) {
++		dev_info(s->dev, "pcm_suspend sin parchear (fw_patch %d, %u palabras)\n", fw_patch, s->suspend.size);
++		return;
++	}
++	w[0x46] = 0xc0c00000 | ACK_PATCH_PC << 5;	/* llama espera_ack */
++	for (i = 0x47; i <= 0x4a; i++)
++		w[i] = PCM_NOP;
++	for (i = s->suspend.size; i < ACK_PATCH_PC; i++)
++		w[i] = PCM_NOP;
++	memcpy(w + ACK_PATCH_PC, ack_patch, sizeof(ack_patch));
++	wmb();
++	s->suspend.size = ACK_PATCH_PC + ARRAY_SIZE(ack_patch);
++	dev_info(s->dev, "pcm_suspend parcheado: espera de PWRAP_IRQ_ACK con límite (%u palabras)\n",
++		 s->suspend.size);
++}
++
++/*
++ * Red de seguridad: el WDT del TOPRGU (mtk_wdt lo paró al suspender) a 31 s con reinicio. Con rgu_net se arma ya
++ * en .prepare, así cubre también el apagado de las CPUs, la suspensión y el despertar hasta que mtk_wdt lo rearme,
++ * y un cuelgue reinicia conservando el pstore.
++ */
++static void mt6797_spm_rgu_arm(void)
++{
++	writel((31 << 6 << 5) | 0x8, spm->toprgu + 0x04);
++	writel(0x1971, spm->toprgu + 0x08);
++	writel(0x22000000 | ((readl(spm->toprgu) & ~(BIT(3) | BIT(6))) | BIT(0) | BIT(2)), spm->toprgu);
++}
++
++static bool rgu_net_on(void)
++{
++	return rgu_net && safety && wake_sec && wake_sec < 20;
++}
++
++/* etapa de la suspensión en SPM_PASR_DPD_0 (sin uso en el firmware; sobrevive a un reinicio por WDT) */
++#define SPM_STAGE			0x630
++#define STAGE(n)			spm_wr(SPM_STAGE, 0x5e5e0000 | (n))
++#define STEP(n)	do { STAGE(n); if (trace_steps) pr_info("SPM: paso %x\n", n); } while (0)
++
+ static int mt6797_spm_enter(suspend_state_t state)
+ {
+ 	u32 flags = SPM_FLAG_DIS_VCORE_DFS | SPM_FLAG_DIS_SYSRAM_SLEEP | SPM_FLAG_EN_HPM_SODI | SPM_FLAG_DIS_DPD |
+@@ -714,12 +1225,28 @@ static int mt6797_spm_enter(suspend_state_t state)
+ 	u32 settle, r12, raw, dbg, pc;
+ 	int ret;
+ 
++	STEP(0x20);
+ 	/* spm_set_sysclk_settle() */
+ 	spm_wr(SPM_CLK_CON, spm_rd(SPM_CLK_CON) | SYS_SETTLE_SEL);
+ 	spm_wr(SPM_CLK_SETTLE, 0);
+ 	settle = spm_rd(SPM_CLK_SETTLE);
+ 	spm_wr(SPM_CLK_SETTLE, SPM_SYSCLK_SETTLE - settle);
+ 
++	if (afcdac)
++		spm_wr(SPM_BSI_EN_SR, AFCDAC_DEFAULT);
++	STEP(0x21);
++	mt6797_spm_conn_off();
++	STAGE(2);
++	if (rgu_net_on())
++		mt6797_spm_rgu_arm();
++	mt6797_spm_cg_save();
++	spm_wr(SPM_RSV_CON, 0);
++	STEP(0x22);
++	if (mt6797_spm_uart_sleep(true)) {
++		mt6797_spm_uart_sleep(false);
++		return -EBUSY;
++	}
++	STEP(0x23);
+ 	if (vcorefs)
+ 		mt6797_spm_vcorefs_stop(spm);
+ 	ret = mt6797_spm_reset_pcm(&spm->suspend);
+@@ -727,16 +1254,17 @@ static int mt6797_spm_enter(suspend_state_t state)
+ 		pr_err("SPM: el PCM no se resetea (0x%08x)\n", spm_rd(PCM_FSM_STA));
+ 		return ret;
+ 	}
++	STEP(0x24);
+ 	mt6797_spm_kick_im(&spm->suspend);
++	STEP(0x25);
+ 	mt6797_spm_power_control();
++	STEP(0x26);
+ 	mt6797_spm_wakeup_event(timer, wake_src ? wake_src : WAKE_SRC_FOR_SUSPEND);
++	STEP(0x27);
+ 	writel(WDT_REQ_IRQ_KEY | (readl(spm->toprgu + WDT_REQ_IRQ_EN) & ~WDT_REQ_SPM_SCPSYS), spm->toprgu + WDT_REQ_IRQ_EN);
+-	if (wdt_wake && safety) {
+-		/* red de seguridad: el WDT del TOPRGU (mtk_wdt lo paró al suspender) a 31 s con reinicio */
+-		writel((31 << 6 << 5) | 0x8, spm->toprgu + 0x04);
+-		writel(0x1971, spm->toprgu + 0x08);
+-		writel(0x22000000 | ((readl(spm->toprgu) & ~(BIT(3) | BIT(6))) | BIT(0) | BIT(2)), spm->toprgu);
+-	} else if (!wdt_wake && pcm_wdt)
++	if (wdt_wake && safety)
++		mt6797_spm_rgu_arm();
++	if (!wdt_wake && pcm_wdt)
+ 		writel(WDT_REQ_MODE_KEY | readl(spm->toprgu + WDT_REQ_MODE) | WDT_REQ_SPM_SCPSYS,
+ 		       spm->toprgu + WDT_REQ_MODE);
+ 	if (rsv5 != 1)
+@@ -745,6 +1273,7 @@ static int mt6797_spm_enter(suspend_state_t state)
+ 		mt6797_spm_gpt_arm(gpt_sec);
+ 	if (gic_mask)
+ 		mt6797_spm_gic_mask(true);
++	STEP(0x28);
+ 	mt6797_spm_kick_pcm(flags);
+ 	pr_info("SPM: PCM en marcha: fsm 0x%08x r15 0x%08x im 0x%08x/%u, cpu%d, online %*pbl\n", spm_rd(PCM_FSM_STA),
+ 		spm_rd(PCM_REG15_DATA), spm_rd(PCM_IM_PTR), spm_rd(PCM_IM_LEN), smp_processor_id(),
+@@ -801,6 +1330,8 @@ static int mt6797_spm_enter(suspend_state_t state)
+ 		mt6797_spm_gic_mask(false);
+ 	if (gpt_sec)
+ 		mt6797_spm_gpt_arm(0);
++	mt6797_spm_cg_restore();
++	STAGE(3);
+ 	/* __spm_get_wakeup_status() */
+ 	pc = spm_rd(PCM_REG_DATA_INI);
+ 	r12 = spm_rd(SPM_SW_RSV_0);
+@@ -808,11 +1339,14 @@ static int mt6797_spm_enter(suspend_state_t state)
+ 	dbg = spm_rd(SPM_SW_DEBUG);
+ 	spm->last_r12 = r12;
+ 	mt6797_spm_clean_after_wakeup();
++	mt6797_spm_uart_sleep(false);
+ 	writel(WDT_REQ_MODE_KEY | (readl(spm->toprgu + WDT_REQ_MODE) & ~WDT_REQ_SPM_SCPSYS), spm->toprgu + WDT_REQ_MODE);
+ 	pr_info("SPM: despierta r12=0x%08x raw=0x%08x timer_out=%u debug=0x%08x pc=0x%x r13=0x%08x\n", r12, raw,
+ 		spm_rd(SPM_BSI_D1_SR), dbg, pc, spm_rd(PCM_REG13_DATA));
+ 	pr_info("SPM: event_reg=0x%08x wake_misc=0x%08x r12_ext=0x%08x raw_ext=0x%08x idle_sta=0x%08x\n",
+ 		spm_rd(0x424), spm_rd(0x41c), spm_rd(0x144), spm_rd(0x160), spm_rd(0x170));
++	if (spm_rd(SPM_RSV_CON))
++		pr_warn("SPM: se agotó la espera de PWRAP_IRQ_ACK al despertar (RSV_CON 0x%08x)\n", spm_rd(SPM_RSV_CON));
+ 	return 0;
+ }
+ 
+@@ -1177,8 +1711,12 @@ static void mt6797_spm_pmic_suspend(struct regmap *m, bool enter)
+ /* regmap del PMIC: antes de syscore_suspend (pwrap usa ktime_get en sus esperas) */
+ static int mt6797_spm_prepare(void)
+ {
++	STAGE(1);
++	if (rgu_net_on())
++		mt6797_spm_rgu_arm();
+ 	mt6797_spm_pmic_suspend(spm->pmic, true);
+ 	mt6797_spm_pwrap_suspend_table(spm);
++	mt6797_spm_pmic_ck(spm->pmic, true);
+ 	if (mark_recovery)
+ 		mt6797_spm_rtc_recovery(true);
+ 	return 0;
+@@ -1188,9 +1726,11 @@ static void mt6797_spm_finish(void)
+ {
+ 	if (vcorefs)
+ 		mt6797_spm_vcorefs_start(spm);
++	mt6797_spm_pmic_ck(spm->pmic, false);
+ 	mt6797_spm_pmic_suspend(spm->pmic, false);
+ 	if (mark_recovery)
+ 		mt6797_spm_rtc_recovery(false);
++	STAGE(4);
+ }
+ 
+ static int mt6797_spm_valid(suspend_state_t state)
+@@ -1407,8 +1947,9 @@ static int mt6797_spm_probe(struct platform_device *pdev)
+ 	ret = mt6797_spm_load(s, "mediatek/mt6797/pcm_suspend.bin", &s->suspend, 0);
+ 	if (ret)
+ 		return dev_err_probe(dev, ret, "pcm_suspend.bin\n");
++	mt6797_spm_patch_suspend(s);
+ 	if (vcorefs) {
+-		ret = mt6797_spm_load(s, "mediatek/mt6797/pcm_vcorefs_lpm.bin", &s->vcorefs, 0x2000);
++		ret = mt6797_spm_load(s, "mediatek/mt6797/pcm_vcorefs_lpm.bin", &s->vcorefs, VCOREFS_OFF);
+ 		if (ret)
+ 			return dev_err_probe(dev, ret, "pcm_vcorefs_lpm.bin\n");
+ 	}
+@@ -1418,6 +1959,17 @@ static int mt6797_spm_probe(struct platform_device *pdev)
+ 	gicr_sgi = devm_ioremap(dev, 0x19210000, 0x1000);
+ 	gpt_base = devm_ioremap(dev, 0x10008000, 0x100);
+ 	gpt_icfg = devm_ioremap(dev, 0x10001000, 0x100);
++	{
++		void __iomem *ic = ioremap(0x10001f00, 4);
++
++		if (ic) {
++			if (readl(ic) & BIT(13))
++				dram_ofs = 0x40000000;
++			iounmap(ic);
++		}
++		dev_info(dev, "DRAM vista por el SPM: +0x%x\n", dram_ofs);
++	}
++	uart_base = devm_ioremap(dev, 0x11002000, 0x4000);
+ 	if (pmic_init)
+ 		mt6797_spm_pmic_init_setting(s->pmic);
+ 	/* estado que dejó el arranque anterior (si un WDT cortó una suspensión de prueba) */
+@@ -1426,7 +1978,23 @@ static int mt6797_spm_probe(struct platform_device *pdev)
+ 			 spm_rd(i + 8), spm_rd(i + 12), spm_rd(i + 16), spm_rd(i + 20), spm_rd(i + 24), spm_rd(i + 28));
+ 	dev_info(dev, "previo 600: %08x %08x %08x %08x %08x %08x %08x %08x\n", spm_rd(0x600), spm_rd(0x604),
+ 		 spm_rd(0x608), spm_rd(0x60c), spm_rd(0x610), spm_rd(0x614), spm_rd(0x618), spm_rd(0x61c));
++	dev_info(dev, "previo etapa 0x%08x RSV_CON 0x%08x\n", spm_rd(0x630), spm_rd(0x620));
++	dev_info(dev, "BSI: MDBSI_CON %08x GEN %08x EN_SR %08x CLK_SR %08x D0-2 %08x %08x %08x\n",
++		 spm_rd(SPM_MDBSI_CON), spm_rd(SPM_BSI_GEN), spm_rd(SPM_BSI_EN_SR), spm_rd(SPM_BSI_CLK_SR),
++		 spm_rd(SPM_BSI_D0_SR), spm_rd(SPM_BSI_D1_SR), spm_rd(SPM_BSI_D2_SR));
+ 	mt6797_spm_hw_init();
++	if (im_test) {
++		/* control de la lectura de IM: cargar el firmware de suspensión sin arrancarlo */
++		mt6797_spm_reset_pcm(&s->suspend);
++		mt6797_spm_kick_im(&s->suspend);
++		udelay(500);
++		mt6797_spm_im_check(s, &s->suspend, 0, "cargado");
++	}
++	dev_info(dev, "estado: VAL0 %08x VAL1 %08x PWR %08x r13 %08x RSV0-5 %08x %08x %08x %08x %08x %08x DVFS %08x SRC_REQ %08x CLK_CON %08x CON1 %08x AP_STBY %08x fsm %08x\n",
++		 spm_rd(SPM_POWER_ON_VAL0), spm_rd(SPM_POWER_ON_VAL1), spm_rd(0x180), spm_rd(PCM_REG13_DATA),
++		 spm_rd(SPM_SW_RSV_0), spm_rd(SPM_SW_RSV_1), spm_rd(0x610), spm_rd(0x614), spm_rd(SPM_SW_RSV_4),
++		 spm_rd(SPM_SW_RSV_5), spm_rd(SPM_DVFS_CON), spm_rd(SPM_SRC_REQ), spm_rd(SPM_CLK_CON), spm_rd(PCM_CON1),
++		 spm_rd(SPM_AP_STANDBY_CON), spm_rd(PCM_FSM_STA));
+ 	if (vcorefs)
+ 		mt6797_spm_vcorefs_start(s);
+ 
+-- 
+2.53.0
+

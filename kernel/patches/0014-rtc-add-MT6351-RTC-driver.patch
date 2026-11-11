@@ -1,7 +1,7 @@
 From 2beb04c13c3afdfd09d92ffe27a7f1dec201daa4 Mon Sep 17 00:00:00 2001
 From: bluelightsaber <26096600+bluelightsaber@users.noreply.github.com>
 Date: Fri, 23 Oct 2026 00:20:03 +0200
-Subject: [PATCH 14/20] rtc: add MT6351 RTC driver
+Subject: [PATCH 14/51] rtc: add MT6351 RTC driver
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
@@ -12,7 +12,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  create mode 100644 drivers/rtc/rtc-mt6351.c
 
 diff --git a/drivers/rtc/Kconfig b/drivers/rtc/Kconfig
-index 01def8231..3a3db9458 100644
+index 01def8231873..3a3db9458f58 100644
 --- a/drivers/rtc/Kconfig
 +++ b/drivers/rtc/Kconfig
 @@ -1945,6 +1945,12 @@ config RTC_DRV_MT2712
@@ -29,7 +29,7 @@ index 01def8231..3a3db9458 100644
  	tristate "MediaTek PMIC based RTC"
  	depends on MFD_MT6397 || COMPILE_TEST
 diff --git a/drivers/rtc/Makefile b/drivers/rtc/Makefile
-index 0347645b0..7df3ec6a4 100644
+index 0347645b021f..7df3ec6a4993 100644
 --- a/drivers/rtc/Makefile
 +++ b/drivers/rtc/Makefile
 @@ -114,6 +114,7 @@ obj-$(CONFIG_RTC_DRV_MSC313)	+= rtc-msc313.o
@@ -42,7 +42,7 @@ index 0347645b0..7df3ec6a4 100644
  obj-$(CONFIG_RTC_DRV_MV)	+= rtc-mv.o
 diff --git a/drivers/rtc/rtc-mt6351.c b/drivers/rtc/rtc-mt6351.c
 new file mode 100644
-index 000000000..156faaecc
+index 000000000000..156faaecc6bf
 --- /dev/null
 +++ b/drivers/rtc/rtc-mt6351.c
 @@ -0,0 +1,309 @@
@@ -355,3 +355,6 @@ index 000000000..156faaecc
 +
 +MODULE_DESCRIPTION("RTC del PMIC MT6351");
 +MODULE_LICENSE("GPL");
+-- 
+2.53.0
+
